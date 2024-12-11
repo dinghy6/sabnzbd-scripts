@@ -63,23 +63,23 @@ def extract_info(filename: str) -> tuple[str, str, str]:
     # Doozy of a regex
     pattern = (
         # Event number
-        r'ufc (?P<ppv>\d{1,4})'  # e.g. ufc.300
-        r'|ufc fight night (?P<fnight>\d{1,4})'  # e.g. ufc.fight.night.248
-        r'|ufc on (?P<ufc_on>\w+ \d{1,4})'  # e.g. ufc.on.abc.7
+        r'ufc (?P<ppv>\d{1,4})'  # e.g. ufc 300
+        r'|ufc fight night (?P<fnight>\d{1,4})'  # e.g. ufc fight night 248
+        r'|ufc on (?P<ufc_on>\w+ \d{1,4})'  # e.g. ufc on abc 7
 
         # Fighter names (title)
         # old name pattern: r'|(?P<names>\w+\.?vs\.?\w+)'
         # > had issues with names that had a separator inside the name
         # new name pattern after selling my soul:
-        r'|(?P<names>((?<= )[a-z-]+ ?)+vs( ?(?!ppv|main|prelim|early|[0-9])[a-z-]+?(?= ))+(?: (?![0-9]{2,})[0-9])?)'
-        #                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        r'|(?P<names>((?<= )[a-z-]+ ?)+vs( ?(?!ppv|main|prelim|early|web|[0-9])[a-z-]+?(?= ))+(?: (?![0-9]{2,})[0-9])?)'
+        #                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
         # NOTE: if an additional word is added to the end of the name (e.g. "Yan vs Figueiredo ppv"),
         #       it needs to be added in the first negative lookahead as indicated above
 
         # This pattern allows for the following name formats:
-        # Yan.vs.Figueiredo
+        # Yan vs Figueiredo
         # Du Plessis Vs Adesanya 2
-        # O.Malley.vs.Dvalishvili
+        # O Malley vs Dvalishvili
         # Moicano vs Saint-Denis
 
         # Edition (not including ppv because it is often ommitted anyway)
@@ -103,7 +103,7 @@ def extract_info(filename: str) -> tuple[str, str, str]:
 
         if match.group('names'):
             fighter_names = f"{match.group('names')}"
-            fighter_names = ' '.join(w.capitalize() for w in fighter_names.split())
+            fighter_names = ' '.join(w.title() for w in fighter_names.split())
             fighter_names = fighter_names.replace(' Vs ', ' vs ')
 
         if match.group('edition'):
