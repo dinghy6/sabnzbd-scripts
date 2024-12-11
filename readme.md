@@ -18,7 +18,7 @@ This script attempts to get the UFC event number, fighter names, and edition fro
 ## Features
 
 * Extracts UFC event number, fighter names, and edition from filename.
-* Creates a new folder in the destination folder with the event number, fighter names and edition
+* Creates a new folder in the destination folder with the event number, fighter names and edition.
 * Moves the file to the new folder and renames it to include the event number, fighter names, edition and resolution.
 * Resolves conflicts by comparing video file resolutions. Replaces lower res with higher, etc.
 
