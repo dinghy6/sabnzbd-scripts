@@ -19,7 +19,7 @@ If the extraction is unsuccessful or any other errors occur, the script will pri
 
 import sys
 import re
-import shutil # shutil turned out to be more reliable than pathlib for moving
+from shutil import move # shutil turned out to be more reliable than pathlib for moving
 from pathlib import Path
 
 DESTINATION_FOLDER = '/mnt/media/Sport/'
@@ -268,7 +268,7 @@ def rename_and_move(file_path: Path) -> tuple[str, int]:
         if not new_path.parent.exists():
             # If the destination folder does not exist, create it and move the file
             new_path.parent.mkdir(parents=True)
-            shutil.move(file_path, new_path)
+            move(file_path, new_path)
             return f"Moved {file_path} to {new_path}", 0
 
         # Check if the new folder already contains a video file
@@ -276,7 +276,7 @@ def rename_and_move(file_path: Path) -> tuple[str, int]:
 
         if not existing:
             # If no video files exist in the destination folder, move the file
-            shutil.move(file_path, new_path)
+            move(file_path, new_path)
             return f"Moved {file_path} to {new_path}", 0
 
         # If a video file already exists in the destination folder, check its resolution
@@ -302,7 +302,7 @@ def rename_and_move(file_path: Path) -> tuple[str, int]:
             except OSError as e:
                 print(f"Error deleting file: {e}")
 
-            shutil.move(file_path, new_path)
+            move(file_path, new_path)
             return f"Moved {file_path} to {new_path}", 0
 
     except (FileNotFoundError, OSError, PermissionError, TypeError) as e:
