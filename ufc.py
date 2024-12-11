@@ -41,6 +41,87 @@ STRICT_MATCHING = False
 
 UFC_CATEGORY = 'ufc'
 
+
+def exit_log(message: str = "", exit_code: int = 1) -> None:
+    """
+    Logs a message and exits the program with the specified exit code.
+
+    Prints the provided message followed by newlines so
+    that the 'more' button is available in sabnzbd.
+    Terminates the program using sys.exit with the given exit code.
+
+    :param message: The message to be logged before exiting.
+    :type message: str
+    :param exit_code: The exit code to be used when terminating the program.
+    :type exit_code: int
+    :return: None
+    """
+    print(f"Error: {message}" if exit_code else message)
+    print("\n\n\n")
+    sys.exit(exit_code)
+
+
+def get_resolution(file_path: Path) -> int | None:
+
+    """
+    Extracts the resolution from a video file name. Not trying to be perfect here.
+
+    Returns a value where higher = better resolution for comparison.
+    If no resolution is found, returns None.
+
+    :param file_path: The path to the video file.
+    :type file_path: Path
+    :return: The extracted resolution or None if no resolution is found.
+    :rtype: int or None
+    """
+
+    match = re.search(r'(\d{3,4}[pi]|4k|UHD)', file_path.name, re.IGNORECASE)
+
+    if match:
+        return {
+            'UHD': 2160,
+            '4K': 2160,
+            '2160p': 2160,
+            '1080p': 1080,
+            '720p': 720,
+            '480p': 480,
+            '576p': 576,
+            '1080i': 1080,
+            '720i': 720,
+            '480i': 480,
+            '576i': 576
+        }.get(match.group(1), None)
+    else:
+        return None
+
+
+def find_largest_video_file(video_path: Path) -> Path | None:
+
+    """
+    Finds the largest video file in the given directory.
+
+    Valid video file extensions are .mp4, .mkv, .avi and .mov.
+    If video files are found, it returns the largest one based on file size,
+    because sometimes a sample video or thumbnail is included.
+    If no video files are found, returns None.
+
+    :param directory: The directory path to search for video files.
+    :type directory: str or Path
+    :return: The largest video file path or None if no video files are found.
+    :rtype: Path or None
+    """
+
+    video_files = [
+        f for f in video_path.iterdir()
+            if f.is_file() and f.suffix in ['.mp4', '.mkv', '.avi', '.mov']
+    ]
+
+    if not video_files:
+        return None
+
+    return max(video_files, key=lambda f: f.stat().st_size)
+
+
 def extract_info(filename: str) -> tuple[str, str, str]:
 
     """
@@ -227,85 +308,6 @@ def rename_and_move(file_path: Path) -> tuple[str, int]:
     except (FileNotFoundError, OSError, PermissionError, TypeError) as e:
         return f"Could not move file: {e}", 1
 
-
-def find_largest_video_file(video_path: Path) -> Path | None:
-
-    """
-    Finds the largest video file in the given directory.
-
-    Valid video file extensions are .mp4, .mkv, .avi and .mov.
-    If video files are found, it returns the largest one based on file size,
-    because sometimes a sample video or thumbnail is included.
-    If no video files are found, returns None.
-
-    :param directory: The directory path to search for video files.
-    :type directory: str or Path
-    :return: The largest video file path or None if no video files are found.
-    :rtype: Path or None
-    """
-
-    video_files = [
-        f for f in video_path.iterdir()
-            if f.is_file() and f.suffix in ['.mp4', '.mkv', '.avi', '.mov']
-    ]
-
-    if not video_files:
-        return None
-
-    return max(video_files, key=lambda f: f.stat().st_size)
-
-
-def get_resolution(file_path: Path) -> int | None:
-
-    """
-    Extracts the resolution from a video file name. Not trying to be perfect here.
-
-    Returns a value where higher = better resolution for comparison.
-    If no resolution is found, returns None.
-
-    :param file_path: The path to the video file.
-    :type file_path: Path
-    :return: The extracted resolution or None if no resolution is found.
-    :rtype: int or None
-    """
-
-    match = re.search(r'(\d{3,4}[pi]|4k|UHD)', file_path.name, re.IGNORECASE)
-
-    if match:
-        return {
-            'UHD': 2160,
-            '4K': 2160,
-            '2160p': 2160,
-            '1080p': 1080,
-            '720p': 720,
-            '480p': 480,
-            '576p': 576,
-            '1080i': 1080,
-            '720i': 720,
-            '480i': 480,
-            '576i': 576
-        }.get(match.group(1), None)
-    else:
-        return None
-
-
-def exit_log(message: str = "", exit_code: int = 1) -> None:
-    """
-    Logs a message and exits the program with the specified exit code.
-
-    Prints the provided message followed by newlines so
-    that the 'more' button is available in sabnzbd.
-    Terminates the program using sys.exit with the given exit code.
-
-    :param message: The message to be logged before exiting.
-    :type message: str
-    :param exit_code: The exit code to be used when terminating the program.
-    :type exit_code: int
-    :return: None
-    """
-    print(f"Error: {message}" if exit_code else message)
-    print("\n\n\n")
-    sys.exit(exit_code)
 
 def main():
 
