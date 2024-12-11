@@ -22,7 +22,7 @@ import re
 from shutil import move # shutil turned out to be more reliable than pathlib for moving
 from pathlib import Path
 
-DESTINATION_FOLDER = '/mnt/media/Sport/'
+DESTINATION_FOLDER = r'/mnt/media/Sport/'
 
 # if true, will remove existing files with the same resolution in the name
 REPLACE_SAME_RES = True
