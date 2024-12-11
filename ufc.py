@@ -334,8 +334,7 @@ def main():
         return
 
     exit_log(*rename_and_move(video_file))
-    if not rename_and_move(video_file):
-        exit_log()
+
 
 if __name__ == "__main__":
     main()
