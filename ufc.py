@@ -103,10 +103,11 @@ def extract_info(filename: str) -> tuple[str, str, str]:
 
         if match.group('names'):
             fighter_names = f"{match.group('names')}"
+            fighter_names = ' '.join(w.capitalize() for w in fighter_names.split())
+            fighter_names = fighter_names.replace(' Vs ', ' vs ')
 
         if match.group('edition'):
             edition = match.group('edition')
-            # Capitalize the first letter of each word for consistency
             edition = ' '.join(w.capitalize() for w in edition.split())
             # Correct weird edition names
             edition = EDITION_MAP.get(edition, edition)
