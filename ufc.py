@@ -61,38 +61,33 @@ def exit_log(message: str = "", exit_code: int = 1) -> None:
     sys.exit(exit_code)
 
 
-def get_resolution(file_path: Path) -> int | None:
+def get_resolution(file_path: Path, include_scan_mode: bool = False) -> int | str | None:
 
     """
     Extracts the resolution from a video file name. Not trying to be perfect here.
 
-    Returns a value where higher = better resolution for comparison.
+    if include_scan_mode is false, returns an int where higher = better resolution for comparison.
+    if include_scan_mode is true, returns a string of the resolution and scan mode.
     If no resolution is found, returns None.
 
     :param file_path: The path to the video file.
     :type file_path: Path
+    :param include_scan_mode: Whether to include the scan mode in the resolution.
+    :type include_scan_mode: bool
     :return: The extracted resolution or None if no resolution is found.
-    :rtype: int or None
+    :rtype: int | str | None
     """
 
-    match = re.search(r'(\d{3,4}[pi]|4k|UHD)', file_path.name, re.IGNORECASE)
+    file_name = re.sub(r'4k|uhd', '2160p', file_path.name, re.IGNORECASE)
+    match = re.search(r'(?P<res>\d{3,4})[pi]', file_name, re.IGNORECASE)
 
-    if match:
-        return {
-            'UHD': 2160,
-            '4K': 2160,
-            '2160p': 2160,
-            '1080p': 1080,
-            '720p': 720,
-            '480p': 480,
-            '576p': 576,
-            '1080i': 1080,
-            '720i': 720,
-            '480i': 480,
-            '576i': 576
-        }.get(match.group(1), None)
-    else:
+    if not match:
         return None
+
+    if include_scan_mode:
+        return match.group(0)
+    
+    return int(match.group('res'))
 
 
 def find_largest_video_file(video_path: Path) -> Path | None:
