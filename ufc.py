@@ -36,7 +36,7 @@ EDITION_MAP = {
 }
 
 # if false, will not error out if the event number can't be found.
-# Intead, it is assumed the file is not meant to be a ufc file.
+# Instead, it is assumed the file is not meant to be a ufc file.
 # This is for running on the movie category as well as TV > Sport
 # because ufc files are often miscategorized.
 # NOTE: If the category name is UFC_CATEGORY, STRICT_MATCHING will be set to True.
@@ -141,14 +141,14 @@ def extract_info(file_name: str) -> tuple[str, str, str]:
     # unify separators to spaces
     file_name = re.sub(r'[\.\s_]', ' ', file_name)
 
-    # Doozy of a regex
+    # Doozy of a regex. Using global search because sometimes they appear out of order
     pattern = (
         # Event number
         r'ufc (?P<ppv>\d{1,4})'  # e.g. ufc 300
         r'|ufc fight night (?P<fnight>\d{1,4})'  # e.g. ufc fight night 248
         r'|ufc on (?P<ufc_on>\w+ \d{1,4})'  # e.g. ufc on abc 7
-
-        # Fighter names (title)
+        #
+        # Fighter names (x vs y)
         # old name pattern: r'|(?P<names>\w+\.?vs\.?\w+)'
         # > had issues with names that had a separator inside the name
         # new name pattern after selling my soul:
@@ -156,22 +156,14 @@ def extract_info(file_name: str) -> tuple[str, str, str]:
         #                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
         # NOTE: if an additional word is added to the end of the name (e.g. "Yan vs Figueiredo ppv"),
         #       it needs to be added in the first negative lookahead as indicated above
-
-        # This pattern allows for the following name formats:
-        # Yan vs Figueiredo
-        # Du Plessis Vs Adesanya 2
-        # O Malley vs Dvalishvili
-        # Moicano vs Saint-Denis
-
+        #
         # Edition (not including ppv because it is often ommitted anyway)
         r'|(?P<edition>early prelims|prelims|preliminary)'
     )
 
     matches = re.finditer(pattern, file_name, re.I)
 
-    event_number = None
-    fighter_names = ''
-    edition = None
+    event_number, fighter_names, edition = '', '', ''
 
     for match in matches:
 
@@ -193,19 +185,15 @@ def extract_info(file_name: str) -> tuple[str, str, str]:
             # Correct weird edition names
             edition = EDITION_MAP.get(edition, edition)
 
-    if event_number is None:
+    if not event_number:
         if STRICT_MATCHING:
             # error exit
             exit_log(f"Unable to extract UFC event number from {file_name}", 1)
         else:
             # silent exit
             exit_log(exit_code=0)
-        event_number = '' # to satisfy linter
 
-    if edition is None:
-        edition = 'Main Event'
-
-    return event_number, fighter_names, edition
+    return event_number, fighter_names, f"{{edition-{edition or 'Main Event'}}}"
 
 
 def construct_path(file_path: Path) -> Path:
@@ -227,9 +215,7 @@ def construct_path(file_path: Path) -> Path:
     :rtype: Path
     """
 
-    event_number, fighter_names, edition = extract_info(file_path.stem)
-
-    parts = [event_number, fighter_names, f"{{edition-{edition}}}"]
+    parts = [*extract_info(file_path.stem)]
 
     # e.g. UFC Fight Night 248 Yan vs Figueiredo {edition-Main Event}
     folder_name = " ".join(parts)
