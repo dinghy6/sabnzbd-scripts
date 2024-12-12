@@ -22,6 +22,7 @@ print an error message and exit with a non-zero exit code.
 
 import sys
 import re
+import argparse
 from shutil import move # shutil turned out to be more reliable than pathlib for moving
 from pathlib import Path
 from enum import Enum
@@ -271,7 +272,7 @@ def construct_path(file_path: Path) -> Path:
     return Path(DESTINATION_FOLDER) / folder_name / file_name
 
 
-def rename_and_move(file_path: Path) -> tuple[str, int]:
+def rename_and_move(file_path: Path, dry_run: bool) -> tuple[str, int]:
 
     """
     Renames and moves a UFC video file to a new directory based on extracted information.
@@ -283,6 +284,8 @@ def rename_and_move(file_path: Path) -> tuple[str, int]:
 
     :param file_path: The full path to the downloaded video file.
     :type file_path: Path
+    :param dry_run: Whether to perform a dry run (default: False).
+    :type dry_run: bool
     :return: A tuple containing a boolean indicating success and an error message.
     :rtype: tuple[str, int]
     """
@@ -296,7 +299,8 @@ def rename_and_move(file_path: Path) -> tuple[str, int]:
     # Move the file to the new folder
     try:
         if not new_path.parent.exists():
-            # If the destination folder does not exist, create it and move the file
+            if dry_run:
+                return f"Moved {file_path} to {new_path}", 0
             new_path.parent.mkdir(parents=True)
             move(file_path, new_path)
             return f"Moved {file_path} to {new_path}", 0
@@ -305,7 +309,8 @@ def rename_and_move(file_path: Path) -> tuple[str, int]:
         existing = find_largest_video_file(new_path.parent)
 
         if not existing:
-            # If no video files exist in the destination folder, move the file
+            if dry_run:
+                return f"Moved {file_path} to {new_path}", 0
             move(file_path, new_path)
             return f"Moved {file_path} to {new_path}", 0
 
@@ -327,16 +332,78 @@ def rename_and_move(file_path: Path) -> tuple[str, int]:
         else:
             # If the downloaded file has a higher resolution, replace the existing file
             try:
+                if dry_run:
+                    print(f"Removed lower resolution file {existing.name}")
                 existing.unlink()
                 print(f"Removed lower resolution file {existing.name}")
             except OSError as e:
                 print(f"Error deleting file: {e}")
 
+            if dry_run:
+                return f"Moved {file_path} to {new_path}", 0
             move(file_path, new_path)
             return f"Moved {file_path} to {new_path}", 0
 
     except (FileNotFoundError, OSError, PermissionError, TypeError) as e:
         return f"Could not move file: {e}", 1
+
+
+def parse_args() -> str | None:
+
+    """
+    Parses command line arguments. Only called if sys.argv[1] is not a directory.
+    
+    Mostly made this for re-organization of existing files. Can use arguments
+    to run manually. Quick run: python ufc.py -d /path/to/downloaded/folder
+
+    :return: The folder containing the video files.
+    :rtype: str | None
+    """
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-d', '--dir', default=DESTINATION_FOLDER, help="The directory containing the video files to be processed")
+    parser.add_argument('-D', '--dest', help="The destination folder for the renamed files")
+    parser.add_argument('-r', '--replace-same-res', action='store_true', help="Replace existing files with the same resolution in the name")
+    parser.add_argument('-s', '--strict-matching', action='store_true', help="Fail if the event number cannot be found in the file name")
+    parser.add_argument('--rename-all', action='store_true', help="Rename all UFC folders and files in the directory. Use with caution.")
+    parser.add_argument('--remove-renamed', action='store_true', help="Remove empty folders after renaming.")
+    parser.add_argument('--force', action='store_true', help="Force removal of renamed folders. Warning: This deletes all files left in the folder.")
+    parser.add_argument('--dry-run', action='store_true', help="Print out the new filenames without actually moving the files.")
+    args = parser.parse_args()
+
+    if args.dest:
+        globals()['DESTINATION_FOLDER'] = args.dest
+
+    if args.replace_same_res:
+        globals()['REPLACE_SAME_RES'] = True
+
+    if args.strict_matching:
+        globals()['STRICT_MATCHING'] = True
+
+    # rename all UFC folders and files
+    try:
+        directory = Path(args.dir)
+    except (TypeError, ValueError) as e:
+        return None
+
+    if not args.rename_all:
+        return directory
+
+    dirs = [d for d in directory.iterdir() if d.is_dir()]
+
+    for folder in dirs:
+        if folder.is_dir():
+            for file in folder.iterdir():
+                if file.is_file() and file.suffix in ['.mp4', '.mkv', '.avi', '.mov']:
+                    message, exit_code = rename_and_move(file, args.dry_run)
+                    print("Error: " + message if exit_code else message)
+            if args.remove_renamed and (not folder.iterdir() or args.force):
+                if args.dry_run:
+                    print(f"Removing empty folder {folder}")
+                else:
+                    folder.rmdir()
+
+    return exit_log("Done.", 0)
 
 
 def main() -> None:
@@ -363,6 +430,18 @@ def main() -> None:
 
     # Print newlines so the 'more' button is available in sabnzbd
     print("\n\n\n")
+
+    if len(sys.argv) == 1:
+        return exit_log("Not enough arguments.", 1)
+    
+    try:
+        # try to parse the path
+        directory = Path(sys.argv[1])
+    except (TypeError, ValueError) as e:
+        if not parse_args():
+            return exit_log(f"Invalid directory path: {e}", 1)
+
+    parse_args()
 
     if len(sys.argv) >= 9:
         try:
