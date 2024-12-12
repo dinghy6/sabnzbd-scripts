@@ -2,18 +2,21 @@
 
 This script is used in SABnzbd's post-processing to move and rename UFC files.
 
-The script will attempt to extract the UFC event number (event name), fighter names (title), and edition from the filename.
+The script will attempt to extract the UFC event number (event name), 
+fighter names (title), and edition from the filename.
 
 Plex uses editions to specify different versions of movies.
 We can use this to differentiate between different versions of UFC files.
 
 The editions used in output filenames are: Early Prelims, Prelims, and Main Event.
 
-If the extraction is successful, the script will create a new folder in DESTINATION_FOLDER with the event number and
-edition name. It will then move the file to this new folder and rename it to include the event number, fighter names,
+If the extraction is successful, the script will create a new folder in 
+DESTINATION_FOLDER with the event number and edition name. It will then move the 
+file to this new folder and rename it to include the event number, fighter names,
 and edition.
 
-If the extraction is unsuccessful or any other errors occur, the script will print an error message and exit with a non-zero exit code.
+If the extraction is unsuccessful or any other errors occur, the script will 
+print an error message and exit with a non-zero exit code.
 
 """
 
@@ -43,6 +46,7 @@ UFC_CATEGORY = 'ufc'
 
 
 def exit_log(message: str = "", exit_code: int = 1) -> None:
+
     """
     Logs a message and exits the program with the specified exit code.
 
@@ -56,6 +60,7 @@ def exit_log(message: str = "", exit_code: int = 1) -> None:
     :type exit_code: int
     :return: None
     """
+
     print(f"Error: {message}" if exit_code else message)
     print("\n\n\n")
     sys.exit(exit_code)
@@ -93,17 +98,17 @@ def get_resolution(file_path: Path, include_scan_mode: bool = False) -> int | st
 def find_largest_video_file(video_path: Path) -> Path | None:
 
     """
-    Finds the largest video file in the given directory.
+    Finds the largest video file in the given path.
 
     Valid video file extensions are .mp4, .mkv, .avi and .mov.
     If video files are found, it returns the largest one based on file size,
     because sometimes a sample video or thumbnail is included.
     If no video files are found, returns None.
 
-    :param directory: The directory path to search for video files.
-    :type directory: str or Path
+    :param video_path: The path to search for video files.
+    :type video_path: Path
     :return: The largest video file path or None if no video files are found.
-    :rtype: Path or None
+    :rtype: Path | None
     """
 
     video_files = [
@@ -117,7 +122,7 @@ def find_largest_video_file(video_path: Path) -> Path | None:
     return max(video_files, key=lambda f: f.stat().st_size)
 
 
-def extract_info(filename: str) -> tuple[str, str, str]:
+def extract_info(file_name: str) -> tuple[str, str, str]:
 
     """
     Extract UFC event number, fighter names, and edition from a filename.
@@ -127,14 +132,14 @@ def extract_info(filename: str) -> tuple[str, str, str]:
     Event number is in the format "UFC 300" or "UFC Fight Night 248" or "UFC on ABC 7".
     If the event number is not found, prints an error message and exits.
 
-    :param filename: The filename to extract information from
-    :type filename: str
+    :param file_name: The file name to extract information from
+    :type file_name: str
     :return: A tuple of (event_number, fighter_names, edition)
-    :rtype: tuple
+    :rtype: tuple[str, str, str]
     """
 
     # unify separators to spaces
-    filename = re.sub(r'[\.\s_]', ' ', filename)
+    file_name = re.sub(r'[\.\s_]', ' ', file_name)
 
     # Doozy of a regex
     pattern = (
@@ -162,7 +167,7 @@ def extract_info(filename: str) -> tuple[str, str, str]:
         r'|(?P<edition>early prelims|prelims|preliminary)'
     )
 
-    matches = re.finditer(pattern, filename, re.I)
+    matches = re.finditer(pattern, file_name, re.I)
 
     event_number = None
     fighter_names = ''
@@ -191,7 +196,7 @@ def extract_info(filename: str) -> tuple[str, str, str]:
     if event_number is None:
         if STRICT_MATCHING:
             # error exit
-            exit_log(f"Unable to extract UFC event number from {filename}", 1)
+            exit_log(f"Unable to extract UFC event number from {file_name}", 1)
         else:
             # silent exit
             exit_log(exit_code=0)
@@ -208,8 +213,11 @@ def construct_path(file_path: Path) -> Path:
     """
     Constructs a new file path for a UFC video file based on extracted information.
 
-    The new path includes the event number, fighter names, resolution, and edition,
-    and is located under the specified destination folder.
+    Folder format:
+    {event_number} {fighter_names} {edition}
+
+    File format:
+    {event_number} {fighter_names} {edition} {resolution}.{suffix}
 
     The fighter names and resolution may be ommitted if not found in the file name.
 
@@ -247,7 +255,7 @@ def rename_and_move(file_path: Path) -> tuple[str, int]:
     :param file_path: The full path to the downloaded video file.
     :type file_path: Path
     :return: A tuple containing a boolean indicating success and an error message.
-    :rtype: tuple[bool, str]
+    :rtype: tuple[str, int]
     """
 
     new_path = construct_path(file_path)
@@ -302,31 +310,48 @@ def rename_and_move(file_path: Path) -> tuple[str, int]:
         return f"Could not move file: {e}", 1
 
 
-def main():
+def main() -> None:
 
+    """
+    Main function. For integration with other downloaders, modify the sys.argv calls.
+
+    If it is called by SABnzbd, 9 arguments should be passed in by SABnzbd.
+
+    sys.argv[1] is the full path to the folder containing the video files to be 
+    processed.
+
+    sys.argv[5] is the category of the download. If it matches UFC_CATEGORY, 
+    the script will fail if it cannot find the event number in the filename.
+
+    The script will filter the files in the directory to find the largest video file, 
+    and then attempt to rename and move it to the specified destination folder.
+
+    If the video file is successfully moved, the script will exit with 0. 
+    If there is an error, the script will exit with 1.
+
+    :return: None
+    """
+
+    # Print newlines so the 'more' button is available in sabnzbd
     print("\n\n\n")
 
-    # This is the only sabnzbd-specific code.
     if len(sys.argv) >= 9:
         try:
             # make sure the path is valid
             directory = Path(sys.argv[1])
         except (TypeError, ValueError) as e:
-            exit_log(f"Invalid directory path: {e}", 1)
-            return
+            return exit_log(f"Invalid directory path: {e}", 1)
 
         if sys.argv[5] == UFC_CATEGORY:
             globals()['STRICT_MATCHING'] = True
     else:
-        exit_log("Not enough arguments.", 1)
-        return
+        return exit_log("Not enough arguments.", 1)
 
     # Filter video files
     video_file = find_largest_video_file(directory)
 
     if not video_file:
-        exit_log("No video files found.", 1)
-        return
+        return exit_log("No video files found.", 1)
 
     exit_log(*rename_and_move(video_file))
 
