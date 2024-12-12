@@ -24,6 +24,12 @@ import sys
 import re
 from shutil import move # shutil turned out to be more reliable than pathlib for moving
 from pathlib import Path
+from enum import Enum
+
+class Bracket(Enum):
+    SQUARE = 'square'
+    CURLY = 'curly'
+    ROUND = 'round'
 
 DESTINATION_FOLDER = r'/mnt/media/Sport/'
 
@@ -44,6 +50,23 @@ STRICT_MATCHING = False
 
 UFC_CATEGORY = 'ufc'
 
+# Formatting configuration. The keys must match the keys in extract_info().
+# define the order of the parts (value here will be the index)
+FORMAT_ORDER = {
+    'event_number': 0,
+    'fighter_names': 1,
+    'edition': 2,
+    'resolution': 3
+}
+
+# define which parts need brackets. Editions need curly brackets to be detected.
+FORMAT_TOKENS = {
+    'edition': Bracket.CURLY,
+    'resolution': Bracket.SQUARE
+}
+
+# define which parts are used in the folder name. Order used is the same as FORMAT_ORDER.
+FORMAT_FOLDER = {'event_number', 'fighter_names', 'edition'}
 
 def exit_log(message: str = "", exit_code: int = 1) -> None:
 
@@ -122,58 +145,65 @@ def find_largest_video_file(video_path: Path) -> Path | None:
     return max(video_files, key=lambda f: f.stat().st_size)
 
 
-def extract_info(file_name: str) -> tuple[str, str, str]:
+def extract_info(file_name: str) -> dict[str, str]:
 
     """
     Extract UFC event number, fighter names, and edition from a filename.
     
-    Uses a regular expression to extract the information from the filename. 
-    If the extraction is successful, returns a tuple of (event_number, fighter_names, edition).
-    Event number is in the format "UFC 300" or "UFC Fight Night 248" or "UFC on ABC 7".
-    If the event number is not found, prints an error message and exits.
+    Uses regex to extract the information from the filename. 
+    First tries to find the UFC event number. If not found, the script exits.
+    How it exits is determined by the STRICT_MATCHING variable.
+    If the extraction is successful, returns a dictionary of info found.
 
     :param file_name: The file name to extract information from
     :type file_name: str
-    :return: A tuple of (event_number, fighter_names, edition)
-    :rtype: tuple[str, str, str]
+    :return: A dictionary of extracted information. Keys are the same as the FORMAT_ORDER keys
+    :rtype: dict[str, str]
     """
 
-    # unify separators to spaces
+    # Unify separators to spaces
     file_name = re.sub(r'[\.\s_]', ' ', file_name)
-
-    # Doozy of a regex. Using global search because sometimes they appear out of order
-    pattern = (
-        # Event number
-        r'ufc (?P<ppv>\d{1,4})'  # e.g. ufc 300
-        r'|ufc fight night (?P<fnight>\d{1,4})'  # e.g. ufc fight night 248
-        r'|ufc on (?P<ufc_on>\w+ \d{1,4})'  # e.g. ufc on abc 7
-        #
-        # Fighter names (x vs y)
-        # old name pattern: r'|(?P<names>\w+\.?vs\.?\w+)'
-        # > had issues with names that had a separator inside the name
-        # new name pattern after selling my soul:
-        r'|(?P<names>((?<= )[a-z-]+ ?)+vs( ?(?!ppv|main|prelim|early|web|[0-9])[a-z-]+?(?= ))+(?: (?![0-9]{2,})[0-9])?)'
-        #                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-        # NOTE: if an additional word is added to the end of the name (e.g. "Yan vs Figueiredo ppv"),
-        #       it needs to be added in the first negative lookahead as indicated above
-        #
-        # Edition (not including ppv because it is often ommitted anyway)
-        r'|(?P<edition>early prelims|prelims|preliminary)'
-    )
-
-    matches = re.finditer(pattern, file_name, re.I)
 
     event_number, fighter_names, edition = '', '', ''
 
+    # Event number
+    # there are also 'UFC Live' events which will not be caught, but they usually
+    # don't have a number anyway
+    pattern = r'ufc (?P<ppv>\d{1,4})|ufc fight night (?P<fnight>\d{1,4})|ufc on (?P<ufc_on>\w+ \d{1,4})'
+    match = re.search(pattern, file_name, re.IGNORECASE)
+
+    if not match:
+        if STRICT_MATCHING:
+            # error exit
+            exit_log(f"Unable to extract UFC event number from {file_name}", 1)
+        else:
+            # silent exit
+            exit_log(exit_code=0)
+        sys.exit() # for clarity
+
+    event_number = ''
+    if match.group('ppv'):
+        event_number = f"UFC {match.group('ppv')}"
+    elif match.group('fnight'):
+        event_number = f"UFC Fight Night {match.group('fnight')}"
+    elif match.group('ufc_on'):
+        event_number = f"UFC on {match.group('ufc_on').upper()}"
+
+    # file_name = file_name[:match.start()] + file_name[match.end():]
+
+    # Find the rest. Using global search because sometimes they appear out of order
+    pattern = (
+        # Fighter names (x vs y)
+        r'(?P<names>((?<= |^)[a-z-]+(?<!ppv|event|prelims|preliminary) )+vs( (?!ppv|main|prelim|early|web)[a-z-]+(?= |$))+(?: (?![0-9]{2,})[0-9])?)'
+        # NOTE: If additional words end up in the name, add them to the regex
+
+        # Edition (not including ppv because it is often ommitted)
+        r'|(?P<edition>early prelims|prelims|preliminary)'
+    )
+
+    matches = re.finditer(pattern, file_name, re.IGNORECASE)
+
     for match in matches:
-
-        if match.group('ppv'):
-            event_number = f"UFC {match.group('ppv')}"
-        elif match.group('fnight'):
-            event_number = f"UFC Fight Night {match.group('fnight')}"
-        elif match.group('ufc_on'):
-            event_number = f"UFC on {match.group('ufc_on')}"
-
         if match.group('names'):
             fighter_names = f"{match.group('names')}"
             fighter_names = ' '.join(w.title() for w in fighter_names.split())
@@ -185,15 +215,12 @@ def extract_info(file_name: str) -> tuple[str, str, str]:
             # Correct weird edition names
             edition = EDITION_MAP.get(edition, edition)
 
-    if not event_number:
-        if STRICT_MATCHING:
-            # error exit
-            exit_log(f"Unable to extract UFC event number from {file_name}", 1)
-        else:
-            # silent exit
-            exit_log(exit_code=0)
-
-    return event_number, fighter_names, f"{{edition-{edition or 'Main Event'}}}"
+    return {
+        'event_number': event_number, 
+        'fighter_names': fighter_names, 
+        'edition': f"edition-{edition or 'Main Event'}",
+        'resolution': str(get_resolution(file_name, True) or '')
+    }
 
 
 def construct_path(file_path: Path) -> Path:
@@ -201,12 +228,7 @@ def construct_path(file_path: Path) -> Path:
     """
     Constructs a new file path for a UFC video file based on extracted information.
 
-    Folder format:
-    {event_number} {fighter_names} {edition}
-
-    File format:
-    {event_number} {fighter_names} {edition} {resolution}.{suffix}
-
+    The formatting is defined in the FORMAT_X variables.
     The fighter names and resolution may be ommitted if not found in the file name.
 
     :param file_path: The full path to the original video file.
@@ -215,15 +237,36 @@ def construct_path(file_path: Path) -> Path:
     :rtype: Path
     """
 
-    parts = [*extract_info(file_path.stem)]
+    parts = [''] * len(FORMAT_ORDER)
+    folder_parts = [''] * len(FORMAT_ORDER)
 
-    # e.g. UFC Fight Night 248 Yan vs Figueiredo {edition-Main Event}
-    folder_name = " ".join(parts)
+    info = extract_info(file_path.stem).items()
+    for key, value in info:
+        if not value:
+            continue
 
-    parts.append(get_resolution(file_path, include_scan_mode=True))
+        if key not in FORMAT_ORDER:
+            exit_log(f"FORMAT_ORDER does not contain {key}", 1)
+            sys.exit()
 
-    # e.g. UFC Fight Night 248 Yan vs Figueiredo {edition-Main Event} 1080p.mkv
-    file_name = " ".join(parts) + file_path.suffix
+        index = FORMAT_ORDER[key]
+        token = FORMAT_TOKENS.get(key)
+
+        if token == Bracket.CURLY:
+            value = '{' + value + '}'
+        elif token == Bracket.SQUARE:
+            value = '[' + value + ']'
+
+        parts[index] = value
+
+        if key in FORMAT_FOLDER:
+            folder_parts[index] = value
+
+    # e.g. UFC Fight Night 248 Yan vs Figueiredo
+    folder_name = " ".join(filter(None, folder_parts))
+
+    # e.g. UFC Fight Night 248 Yan vs Figueiredo {edition-Main Event} [1080p].mkv
+    file_name = " ".join(filter(None, parts)) + file_path.suffix
 
     return Path(DESTINATION_FOLDER) / folder_name / file_name
 
