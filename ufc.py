@@ -221,17 +221,15 @@ def construct_path(file_path: Path) -> Path:
 
     event_number, fighter_names, edition = extract_info(file_path.stem)
 
-    fighter_names = f" {fighter_names}" if fighter_names else ''
+    parts = [event_number, fighter_names, f"{{edition-{edition}}}"]
 
-    resolution = get_resolution(file_path)
-    resolution = f" {resolution}p" if resolution else ''
-
-    # Construct the new folder and file names. Fighter names are optional
     # e.g. UFC Fight Night 248 Yan vs Figueiredo {edition-Main Event}
-    folder_name = f"{event_number}{fighter_names} {{edition-{edition}}}"
+    folder_name = " ".join(parts)
+
+    parts.append(get_resolution(file_path, include_scan_mode=True))
 
     # e.g. UFC Fight Night 248 Yan vs Figueiredo {edition-Main Event} 1080p.mkv
-    file_name = f"{event_number}{fighter_names} {{edition-{edition}}}{resolution}{file_path.suffix}"
+    file_name = " ".join(parts) + file_path.suffix
 
     return Path(DESTINATION_FOLDER) / folder_name / file_name
 
