@@ -24,7 +24,7 @@ import os
 import sys
 import re
 import argparse
-from shutil import move  # shutil turned out to be more reliable than pathlib for moving
+import shutil
 from pathlib import Path
 from enum import Enum
 
@@ -70,7 +70,8 @@ FORMAT_TOKENS = {
 }
 
 # define which parts are used in the folder name. Order used is the same as FORMAT_ORDER.
-FORMAT_FOLDER = {'event_number', 'fighter_names', 'edition'}
+# add 'edition' if you want each edition to have its own folder
+FORMAT_FOLDER = {'event_number', 'fighter_names'}
 
 
 def exit_log(message: str = "", exit_code: int = 1) -> None:
@@ -115,7 +116,7 @@ def check_path(path: str) -> Path:
     return directory
 
 
-def get_resolution(file_path: Path, include_scan_mode: bool = False) -> int | str | None:
+def get_resolution(file_name: str, include_scan_mode: bool = False) -> int | str | None:
     """
     Extracts the resolution from a video file name. Not trying to be perfect here.
 
@@ -123,15 +124,15 @@ def get_resolution(file_path: Path, include_scan_mode: bool = False) -> int | st
     if include_scan_mode is true, returns a string of the resolution and scan mode.
     If no resolution is found, returns None.
 
-    :param file_path: The path to the video file.
-    :type file_path: Path
+    :param file_name: The file name
+    :type file_name: str
     :param include_scan_mode: Whether to include the scan mode in the resolution.
     :type include_scan_mode: bool
     :return: The extracted resolution or None if no resolution is found.
     :rtype: int | str | None
     """
 
-    file_name = re.sub(r'4k|uhd', '2160p', file_path.name, re.IGNORECASE)
+    file_name = re.sub(r'4k|uhd', '2160p', file_name, re.IGNORECASE)
     match = re.search(r'(?P<res>\d{3,4})[pi]', file_name, re.IGNORECASE)
 
     if not match:
@@ -141,6 +142,36 @@ def get_resolution(file_path: Path, include_scan_mode: bool = False) -> int | st
         return match.group(0)
 
     return int(match.group('res'))
+
+
+def get_editions(path: Path, event_number: str) -> dict[str, dict[str, str]]:
+    """
+    Scans the given directory and extracts editions from the file names.
+
+    Iterates over each file in the specified directory, extracts the edition
+    information from the file name, and returns a dictionary mapping each
+    edition to its corresponding file path. If a file does not contain
+    edition information, it is not included in the result.
+
+    :param path: The directory path to scan for files.
+    :type path: Path
+    :return: A dictionary where keys are edition names and values are file paths.
+    :rtype: dict[str, dict[str, str]]
+    """
+
+    editions_in_folder = {}
+    for file in path.iterdir():
+        if file.is_file():
+            info = extract_info(file.stem, strict=False)
+            edition = extract_info(file.stem, strict=False).get('edition')
+            if edition and info.get('event_number') == event_number:
+                editions_in_folder[edition] = {
+                    'path': str(file),
+                    'event_number': info.get('event_number') or '',
+                    'fighter_names': info.get('fighter_names') or '',
+                    'resolution': info.get('resolution') or ''
+                }
+    return editions_in_folder
 
 
 def find_largest_video_file(video_path: Path) -> Path | None:
@@ -169,7 +200,29 @@ def find_largest_video_file(video_path: Path) -> Path | None:
     return max(video_files, key=lambda f: f.stat().st_size)
 
 
-def extract_info(file_name: str) -> dict[str, str]:
+def find_names(event_number: str) -> str:
+    """
+    Attempts to find fighter names of a given ufc event from an existing folder.
+
+    Searches for a folder in DESTINATION_FOLDER that starts with the event number.
+    If a folder is found, it will attempt to extract the fighter names from the folder name.
+
+    :param event_number: The UFC event number.
+    :type event_number: str
+    :return: The fighter names.
+    :rtype: str
+    """
+
+    for path in Path(DESTINATION_FOLDER).glob(f"{event_number}*"):
+        if path.is_dir():
+            info = extract_info(path.name, False)
+            if info['fighter_names']:
+                return info['fighter_names']
+
+    return ''
+
+
+def extract_info(file_name: str, strict: bool = True) -> dict[str, str]:
     """
     Extract UFC event number, fighter names, and edition from a filename.
 
@@ -180,6 +233,8 @@ def extract_info(file_name: str) -> dict[str, str]:
 
     :param file_name: The file name to extract information from
     :type file_name: str
+    :param strict: Whether to try hard or not
+    :type strict: bool
     :return: A dictionary of extracted information. Keys are the same as the FORMAT_ORDER keys
     :rtype: dict[str, str]
     """
@@ -195,7 +250,7 @@ def extract_info(file_name: str) -> dict[str, str]:
     pattern = r'ufc (?P<ppv>\d{1,4})|ufc fight night (?P<fnight>\d{1,4})|ufc on (?P<ufc_on>\w+ \d{1,4})'
     match = re.search(pattern, file_name, re.IGNORECASE)
 
-    if not match:
+    if not match and strict:
         if STRICT_MATCHING:
             # error exit
             exit_log(f"Unable to extract UFC event number from {file_name}", 1)
@@ -203,21 +258,20 @@ def extract_info(file_name: str) -> dict[str, str]:
             # silent exit
             exit_log(exit_code=0)
         sys.exit()  # for clarity
-
-    event_number = ''
-    if match.group('ppv'):
-        event_number = f"UFC {match.group('ppv')}"
-    elif match.group('fnight'):
-        event_number = f"UFC Fight Night {match.group('fnight')}"
-    elif match.group('ufc_on'):
-        event_number = f"UFC on {match.group('ufc_on').upper()}"
+    elif match:
+        if match.group('ppv'):
+            event_number = f"UFC {match.group('ppv')}"
+        elif match.group('fnight'):
+            event_number = f"UFC Fight Night {match.group('fnight')}"
+        elif match.group('ufc_on'):
+            event_number = f"UFC on {match.group('ufc_on').upper()}"
 
     # file_name = file_name[:match.start()] + file_name[match.end():]
 
     # Find the rest. Using global search because sometimes they appear out of order
     pattern = (
         # Fighter names (x vs y)
-        r'(?P<names>((?<= |^)(?!ppv|main|event|prelim|preliminary)[a-z-]+ )+vs( (?!ppv|main|prelim|early|web)[a-z-]+(?= |$))+(?: (?![0-9]{2,})[0-9])?)'
+        r'(?P<names>((?:(?<= )|(?<=^))(?!ppv|main|event|prelim|preliminary)[a-z-]+ )+vs( (?!ppv|main|prelim|early|web)[a-z-]+(?= |$))+(?: (?![0-9]{2,})[0-9])?)'
         # NOTE: If additional words end up in the name, add them to the regex
 
         # Edition (not including ppv because it is often ommitted)
@@ -238,6 +292,9 @@ def extract_info(file_name: str) -> dict[str, str]:
             # Correct weird edition names
             edition = EDITION_MAP.get(edition, edition)
 
+    if not fighter_names and strict:
+        fighter_names = find_names(event_number)
+
     return {
         'event_number': event_number,
         'fighter_names': fighter_names,
@@ -246,7 +303,7 @@ def extract_info(file_name: str) -> dict[str, str]:
     }
 
 
-def construct_path(file_path: Path) -> Path:
+def construct_path(file_path: Path) -> tuple[Path, dict[str, str]]:
     """
     Constructs a new file path for a UFC video file based on extracted information.
 
@@ -255,15 +312,15 @@ def construct_path(file_path: Path) -> Path:
 
     :param file_path: The full path to the original video file.
     :type file_path: Path
-    :return: The constructed file path including the new folder and file name.
-    :rtype: Path
+    :return: A tuple containing the new file path and a dictionary of extracted information.
+    :rtype: tuple[Path, dict[str, str]]
     """
 
     parts = [''] * len(FORMAT_ORDER)
     folder_parts = [''] * len(FORMAT_ORDER)
 
-    info = extract_info(file_path.stem).items()
-    for key, value in info:
+    info = extract_info(file_path.stem)
+    for key, value in info.items():
         if not value:
             continue
 
@@ -290,10 +347,40 @@ def construct_path(file_path: Path) -> Path:
     # e.g. UFC Fight Night 248 Yan vs Figueiredo {edition-Main Event} [1080p].mkv
     file_name = " ".join(filter(None, parts)) + file_path.suffix
 
-    return Path(DESTINATION_FOLDER) / folder_name / file_name
+    return Path(DESTINATION_FOLDER) / folder_name / file_name, info
 
 
-def rename_and_move(file_path: Path, dry_run: bool = False) -> tuple[str, int]:
+def move_file(file_path: Path, new_path: Path, dry_run: bool = False) -> tuple[str, int]:
+    """
+    Moves a video file from its original location to a new location.
+
+    :param file_path: The full path to the original video file.
+    :type file_path: Path
+    :param new_path: The full path to the new video file.
+    :type new_path: Path
+    :param dry_run: Whether to perform a dry run (default: False).
+    :type dry_run: bool
+    :return: A tuple containing a boolean indicating success and an error message.
+    :rtype: tuple[str, int]
+    """
+
+    if dry_run:
+        return f"Moved {file_path} to {new_path}", 0
+
+    if not new_path.parent.exists():
+        new_path.parent.mkdir(parents=True)
+
+    if not new_path.iterdir():
+        shutil.move(file_path, new_path)
+    else:
+        shutil.copy2(file_path, new_path)
+
+    file_path.unlink()
+
+    return f"Moved {file_path} to {new_path}", 0
+
+
+def rename_and_move(file_path: Path, dry_run: bool = False, bulk_rename: bool = False) -> tuple[str, int]:
     """
     Renames and moves a UFC video file to a new directory based on extracted information.
 
@@ -310,7 +397,7 @@ def rename_and_move(file_path: Path, dry_run: bool = False) -> tuple[str, int]:
     :rtype: tuple[str, int]
     """
 
-    new_path = construct_path(file_path)
+    new_path, info = construct_path(file_path)
 
     if new_path.exists():
         # If the new file already exists, print an error and exit
@@ -318,26 +405,21 @@ def rename_and_move(file_path: Path, dry_run: bool = False) -> tuple[str, int]:
 
     # Move the file to the new folder
     try:
-        if not new_path.parent.exists():
-            if dry_run:
-                return f"Moved {file_path} to {new_path}", 0
-            new_path.parent.mkdir(parents=True)
-            move(file_path, new_path)
-            return f"Moved {file_path} to {new_path}", 0
+        if not new_path.parent.exists() or bulk_rename:
+            return move_file(file_path, new_path, dry_run)
 
-        # Check if the new folder already contains a video file
-        existing = find_largest_video_file(new_path.parent)
+        # find existing video file with same edition
+        existing = get_editions(new_path.parent, info['event_number']).get(
+            info['event_number'])
 
-        if not existing:
-            if dry_run:
-                return f"Moved {file_path} to {new_path}", 0
-            move(file_path, new_path)
-            return f"Moved {file_path} to {new_path}", 0
+        if not existing or not existing.get(info['edition']):
+            return move_file(file_path, new_path, dry_run)
 
-        # If a video file already exists in the destination folder, check its resolution
+        # edition already exists in folder
+
         # if there is no resolution in either, the new file is preferred
-        new_res = get_resolution(file_path) or 99999
-        old_res = get_resolution(existing) or 0
+        new_res = int(info['resolution'][:-1] or 99999)
+        old_res = int(existing['resolution'][:-1] or 0)
 
         if new_res == old_res and not REPLACE_SAME_RES:
 
@@ -351,24 +433,23 @@ def rename_and_move(file_path: Path, dry_run: bool = False) -> tuple[str, int]:
 
         else:
             # If the downloaded file has a higher resolution, replace the existing file
-            try:
+            if existing[info['edition']]['path'] != new_path:
                 if dry_run:
                     print(f"Removed lower resolution file {existing.name}")
-                existing.unlink()
-                print(f"Removed lower resolution file {existing.name}")
-            except OSError as e:
-                print(f"Error deleting file: {e}")
 
-            if dry_run:
-                return f"Moved {file_path} to {new_path}", 0
-            move(file_path, new_path)
-            return f"Moved {file_path} to {new_path}", 0
+                try:
+                    existing.unlink()
+                    print(f"Removed lower resolution file {existing.name}")
+                except OSError as e:
+                    print(f"Error deleting file: {e}")
+
+            return move_file(file_path, new_path, dry_run)
 
     except (FileNotFoundError, OSError, PermissionError, TypeError) as e:
         return f"Could not move file: {e}", 1
 
 
-def parse_args() -> any:
+def parse_args():
     """
     Parses command line arguments. Only called if sys.argv[1] is not a directory.
 
@@ -424,14 +505,26 @@ def parse_args() -> any:
     dirs = [d for d in directory.iterdir() if d.is_dir()]
 
     for folder in dirs:
+
         if folder.is_dir():
+            renamed = True  # so that we don't delete if there was an error
+
             for file in folder.iterdir():
                 if file.is_file() and file.suffix in ['.mp4', '.mkv', '.avi', '.mov']:
-                    message, exit_code = rename_and_move(file, args.dry_run)
+
+                    message, exit_code = rename_and_move(
+                        file, args.dry_run, True)
+
                     print("Error: " + message if exit_code else message)
-            if args.remove_renamed and (not folder.iterdir() or args.force):
+
+                    if exit_code:
+                        renamed = False
+
+            if renamed and args.remove_renamed and (len(list(folder.iterdir())) == 0 or args.force):
                 if args.dry_run:
                     print(f"Removing empty folder {folder}")
+                elif args.force:
+                    shutil.rmtree(folder)  # scorched earth
                 else:
                     folder.rmdir()
 
