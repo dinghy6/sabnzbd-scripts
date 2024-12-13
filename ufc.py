@@ -77,9 +77,7 @@ def exit_log(message: str = "", exit_code: int = 1) -> None:
     """
     Logs a message and exits the program with the specified exit code.
 
-    Prints the provided message followed by newlines so
-    that the 'more' button is available in sabnzbd.
-    Terminates the program using sys.exit with the given exit code.
+    Prints the provided message then terminates the program using sys.exit with the given exit code.
 
     :param message: The message to be logged before exiting.
     :type message: str
@@ -89,7 +87,6 @@ def exit_log(message: str = "", exit_code: int = 1) -> None:
     """
 
     print(f"Error: {message}" if exit_code else message)
-    print("\n\n\n")
     sys.exit(exit_code)
 
 
@@ -472,6 +469,8 @@ def main() -> None:
 
     elif os.getenv('SAB_VERSION'):
         # running from SABnzbd
+        # Print newlines so the 'more' button is available in sabnzbd
+        print("\n\n\n")
         directory = os.getenv('SAB_COMPLETE_DIR')
         category = os.getenv('SAB_CAT')
 
