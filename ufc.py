@@ -24,14 +24,16 @@ import os
 import sys
 import re
 import argparse
-from shutil import move # shutil turned out to be more reliable than pathlib for moving
+from shutil import move  # shutil turned out to be more reliable than pathlib for moving
 from pathlib import Path
 from enum import Enum
+
 
 class Bracket(Enum):
     SQUARE = 'square'
     CURLY = 'curly'
     ROUND = 'round'
+
 
 DESTINATION_FOLDER = r'/mnt/media/Sport/'
 
@@ -70,8 +72,8 @@ FORMAT_TOKENS = {
 # define which parts are used in the folder name. Order used is the same as FORMAT_ORDER.
 FORMAT_FOLDER = {'event_number', 'fighter_names', 'edition'}
 
-def exit_log(message: str = "", exit_code: int = 1) -> None:
 
+def exit_log(message: str = "", exit_code: int = 1) -> None:
     """
     Logs a message and exits the program with the specified exit code.
 
@@ -92,7 +94,6 @@ def exit_log(message: str = "", exit_code: int = 1) -> None:
 
 
 def check_path(path: str) -> Path:
-
     """
     Checks if the given path exists and is a directory.
 
@@ -109,7 +110,8 @@ def check_path(path: str) -> Path:
     try:
         directory = Path(path)
         if not directory.exists() or not directory.is_dir():
-            raise NotADirectoryError(f"Directory path '{directory}' does not exist or is not a directory")
+            raise NotADirectoryError(
+                f"Directory path '{directory}' does not exist or is not a directory")
     except (TypeError, ValueError) as e:
         raise NotADirectoryError(str(e)) from e
 
@@ -117,7 +119,6 @@ def check_path(path: str) -> Path:
 
 
 def get_resolution(file_path: Path, include_scan_mode: bool = False) -> int | str | None:
-
     """
     Extracts the resolution from a video file name. Not trying to be perfect here.
 
@@ -141,12 +142,11 @@ def get_resolution(file_path: Path, include_scan_mode: bool = False) -> int | st
 
     if include_scan_mode:
         return match.group(0)
-    
+
     return int(match.group('res'))
 
 
 def find_largest_video_file(video_path: Path) -> Path | None:
-
     """
     Finds the largest video file in the given path.
 
@@ -163,7 +163,7 @@ def find_largest_video_file(video_path: Path) -> Path | None:
 
     video_files = [
         f for f in video_path.iterdir()
-            if f.is_file() and f.suffix in ['.mp4', '.mkv', '.avi', '.mov']
+        if f.is_file() and f.suffix in ['.mp4', '.mkv', '.avi', '.mov']
     ]
 
     if not video_files:
@@ -173,10 +173,9 @@ def find_largest_video_file(video_path: Path) -> Path | None:
 
 
 def extract_info(file_name: str) -> dict[str, str]:
-
     """
     Extract UFC event number, fighter names, and edition from a filename.
-    
+
     Uses regex to extract the information from the filename. 
     First tries to find the UFC event number. If not found, the script exits.
     How it exits is determined by the STRICT_MATCHING variable.
@@ -206,7 +205,7 @@ def extract_info(file_name: str) -> dict[str, str]:
         else:
             # silent exit
             exit_log(exit_code=0)
-        sys.exit() # for clarity
+        sys.exit()  # for clarity
 
     event_number = ''
     if match.group('ppv'):
@@ -243,15 +242,14 @@ def extract_info(file_name: str) -> dict[str, str]:
             edition = EDITION_MAP.get(edition, edition)
 
     return {
-        'event_number': event_number, 
-        'fighter_names': fighter_names, 
+        'event_number': event_number,
+        'fighter_names': fighter_names,
         'edition': f"edition-{edition or 'Main Event'}",
         'resolution': str(get_resolution(file_name, True) or '')
     }
 
 
 def construct_path(file_path: Path) -> Path:
-
     """
     Constructs a new file path for a UFC video file based on extracted information.
 
@@ -299,7 +297,6 @@ def construct_path(file_path: Path) -> Path:
 
 
 def rename_and_move(file_path: Path, dry_run: bool) -> tuple[str, int]:
-
     """
     Renames and moves a UFC video file to a new directory based on extracted information.
 
@@ -375,10 +372,9 @@ def rename_and_move(file_path: Path, dry_run: bool) -> tuple[str, int]:
 
 
 def parse_args() -> any:
-
     """
     Parses command line arguments. Only called if sys.argv[1] is not a directory.
-    
+
     Mostly made this for re-organization of existing files. Can use arguments
     to run manually. Quick run: python ufc.py -d /path/to/downloaded/folder
 
@@ -387,15 +383,24 @@ def parse_args() -> any:
     """
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('-d', '--dir', default=DESTINATION_FOLDER, help="The directory containing the video files to be processed")
-    parser.add_argument('-c', '--category', help="The category of the download. If it matches UFC_CATEGORY, STRICT_MATCHING will be set to True")
-    parser.add_argument('-D', '--dest', help="The destination folder for the renamed files")
-    parser.add_argument('-r', '--replace-same-res', action='store_true', help="Replace existing files with the same resolution in the name")
-    parser.add_argument('-s', '--strict-matching', action='store_true', help="Fail if the event number cannot be found in the file name")
-    parser.add_argument('--rename-all', action='store_true', help="Rename all UFC folders and files in the directory. Use with caution.")
-    parser.add_argument('--remove-renamed', action='store_true', help="Remove empty folders after renaming.")
-    parser.add_argument('--force', action='store_true', help="Force removal of renamed folders. Warning: This deletes all files left in the folder.")
-    parser.add_argument('--dry-run', action='store_true', help="Print out the new filenames without actually moving the files.")
+    parser.add_argument('-d', '--dir', default=DESTINATION_FOLDER,
+                        help="The directory containing the video files to be processed")
+    parser.add_argument(
+        '-c', '--category', help="The category of the download. If it matches UFC_CATEGORY, STRICT_MATCHING will be set to True")
+    parser.add_argument(
+        '-D', '--dest', help="The destination folder for the renamed files")
+    parser.add_argument('-r', '--replace-same-res', action='store_true',
+                        help="Replace existing files with the same resolution in the name")
+    parser.add_argument('-s', '--strict-matching', action='store_true',
+                        help="Fail if the event number cannot be found in the file name")
+    parser.add_argument('--rename-all', action='store_true',
+                        help="Rename all UFC folders and files in the directory. Use with caution.")
+    parser.add_argument('--remove-renamed', action='store_true',
+                        help="Remove empty folders after renaming.")
+    parser.add_argument('--force', action='store_true',
+                        help="Force removal of renamed folders. Warning: This deletes all files left in the folder.")
+    parser.add_argument('--dry-run', action='store_true',
+                        help="Print out the new filenames without actually moving the files.")
     args = parser.parse_args()
 
     if args.dest:
@@ -438,15 +443,11 @@ def parse_args() -> any:
 
 
 def main() -> None:
-
     """
-    Main function. .
+    Main function.
 
     If it is called by SABnzbd, the environment variables 'SAB_COMPLETE_DIR'
     and 'SAB_CAT' will be set.
-
-    sys.argv[5] is the category of the download. If it matches UFC_CATEGORY, 
-    the script will fail if it cannot find the event number in the filename.
 
     The script will filter the files in the directory to find the largest video file, 
     and then attempt to rename and move it to the specified destination folder.
@@ -464,7 +465,7 @@ def main() -> None:
 
     if len(sys.argv) == 1:
         return exit_log("Not enough arguments.", 1)
-    
+
     if len(sys.argv) == 2:
         # only a job path is provided
         directory = sys.argv[1]
@@ -480,16 +481,14 @@ def main() -> None:
     else:
         # running manually
         directory = parse_args()
-    
+
     try:
         directory = check_path(directory)
     except NotADirectoryError as e:
         return exit_log(f"Invalid job directory: {e}", 1)
 
-
     if category == UFC_CATEGORY:
         globals()['STRICT_MATCHING'] = True
-
 
     # Filter video files
     video_file = find_largest_video_file(directory)
@@ -497,8 +496,8 @@ def main() -> None:
     if not video_file:
         return exit_log("No video files found.", 1)
 
-
     exit_log(*rename_and_move(video_file))
+
 
 main()
 
