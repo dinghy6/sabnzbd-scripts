@@ -20,6 +20,7 @@ print an error message and exit with a non-zero exit code.
 
 """
 
+import os
 import sys
 import re
 import argparse
@@ -88,6 +89,31 @@ def exit_log(message: str = "", exit_code: int = 1) -> None:
     print(f"Error: {message}" if exit_code else message)
     print("\n\n\n")
     sys.exit(exit_code)
+
+
+def check_path(path: str) -> Path:
+
+    """
+    Checks if the given path exists and is a directory.
+
+    If the path exists and is a directory, returns the Path object.
+    If the path does not exist or is not a directory, raises a NotADirectoryError.
+
+    :param path: The path to check.
+    :type path: str
+    :return: The Path object of the given directory.
+    :rtype: Path
+    :raises NotADirectoryError: If the path does not exist or is not a directory.
+    """
+
+    try:
+        directory = Path(path)
+        if not directory.exists() or not directory.is_dir():
+            raise NotADirectoryError(f"Directory path '{directory}' does not exist or is not a directory")
+    except (TypeError, ValueError) as e:
+        raise NotADirectoryError(str(e)) from e
+
+    return directory
 
 
 def get_resolution(file_path: Path, include_scan_mode: bool = False) -> int | str | None:
@@ -348,7 +374,7 @@ def rename_and_move(file_path: Path, dry_run: bool) -> tuple[str, int]:
         return f"Could not move file: {e}", 1
 
 
-def parse_args() -> str | None:
+def parse_args() -> any:
 
     """
     Parses command line arguments. Only called if sys.argv[1] is not a directory.
@@ -357,11 +383,12 @@ def parse_args() -> str | None:
     to run manually. Quick run: python ufc.py -d /path/to/downloaded/folder
 
     :return: The folder containing the video files.
-    :rtype: str | None
+    :rtype: any
     """
 
     parser = argparse.ArgumentParser()
     parser.add_argument('-d', '--dir', default=DESTINATION_FOLDER, help="The directory containing the video files to be processed")
+    parser.add_argument('-c', '--category', help="The category of the download. If it matches UFC_CATEGORY, STRICT_MATCHING will be set to True")
     parser.add_argument('-D', '--dest', help="The destination folder for the renamed files")
     parser.add_argument('-r', '--replace-same-res', action='store_true', help="Replace existing files with the same resolution in the name")
     parser.add_argument('-s', '--strict-matching', action='store_true', help="Fail if the event number cannot be found in the file name")
@@ -377,18 +404,21 @@ def parse_args() -> str | None:
     if args.replace_same_res:
         globals()['REPLACE_SAME_RES'] = True
 
-    if args.strict_matching:
+    if args.strict_matching or args.category == UFC_CATEGORY:
         globals()['STRICT_MATCHING'] = True
 
-    # rename all UFC folders and files
-    try:
-        directory = Path(args.dir)
-    except (TypeError, ValueError) as e:
-        return None
+    directory = args.dir
 
     if not args.rename_all:
         return directory
 
+    try:
+        directory = check_path(directory)
+    except NotADirectoryError as e:
+        exit_log(str(e), 1)
+        sys.exit(1)
+
+    # rename all UFC folders and files in given directory
     dirs = [d for d in directory.iterdir() if d.is_dir()]
 
     for folder in dirs:
@@ -403,18 +433,17 @@ def parse_args() -> str | None:
                 else:
                     folder.rmdir()
 
-    return exit_log("Done.", 0)
+    exit_log("Done.", 0)
+    sys.exit(0)
 
 
 def main() -> None:
 
     """
-    Main function. For integration with other downloaders, modify the sys.argv calls.
+    Main function. .
 
-    If it is called by SABnzbd, 9 arguments should be passed in by SABnzbd.
-
-    sys.argv[1] is the full path to the folder containing the video files to be 
-    processed.
+    If it is called by SABnzbd, the environment variables 'SAB_COMPLETE_DIR'
+    and 'SAB_CAT' will be set.
 
     sys.argv[5] is the category of the download. If it matches UFC_CATEGORY, 
     the script will fail if it cannot find the event number in the filename.
@@ -431,29 +460,36 @@ def main() -> None:
     # Print newlines so the 'more' button is available in sabnzbd
     print("\n\n\n")
 
+    directory, category = None, None
+
     if len(sys.argv) == 1:
         return exit_log("Not enough arguments.", 1)
     
-    try:
-        # try to parse the path
-        directory = Path(sys.argv[1])
-    except (TypeError, ValueError) as e:
-        if not parse_args():
-            return exit_log(f"Invalid directory path: {e}", 1)
+    if len(sys.argv) == 2:
+        # only a job path is provided
+        directory = sys.argv[1]
 
-    parse_args()
+    elif os.getenv('SAB_VERSION'):
+        # running from SABnzbd
+        directory = os.getenv('SAB_COMPLETE_DIR')
+        category = os.getenv('SAB_CAT')
 
-    if len(sys.argv) >= 9:
-        try:
-            # make sure the path is valid
-            directory = Path(sys.argv[1])
-        except (TypeError, ValueError) as e:
-            return exit_log(f"Invalid directory path: {e}", 1)
+        if not directory or not category:
+            return exit_log("SAB_COMPLETE_DIR or SAB_CAT not set.", 1)
 
-        if sys.argv[5] == UFC_CATEGORY:
-            globals()['STRICT_MATCHING'] = True
     else:
-        return exit_log("Not enough arguments.", 1)
+        # running manually
+        directory = parse_args()
+    
+    try:
+        directory = check_path(directory)
+    except NotADirectoryError as e:
+        return exit_log(f"Invalid job directory: {e}", 1)
+
+
+    if category == UFC_CATEGORY:
+        globals()['STRICT_MATCHING'] = True
+
 
     # Filter video files
     video_file = find_largest_video_file(directory)
@@ -461,10 +497,9 @@ def main() -> None:
     if not video_file:
         return exit_log("No video files found.", 1)
 
+
     exit_log(*rename_and_move(video_file))
 
-
-if __name__ == "__main__":
-    main()
+main()
 
 sys.exit(0)
