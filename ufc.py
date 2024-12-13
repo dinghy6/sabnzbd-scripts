@@ -296,7 +296,7 @@ def construct_path(file_path: Path) -> Path:
     return Path(DESTINATION_FOLDER) / folder_name / file_name
 
 
-def rename_and_move(file_path: Path, dry_run: bool) -> tuple[str, int]:
+def rename_and_move(file_path: Path, dry_run: bool = False) -> tuple[str, int]:
     """
     Renames and moves a UFC video file to a new directory based on extracted information.
 
