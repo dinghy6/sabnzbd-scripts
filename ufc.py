@@ -1,12 +1,10 @@
 """
-
 This script is used in SABnzbd's post-processing to move and rename UFC files.
 
 The script will attempt to extract the UFC event number (event name),
-fighter names (title), and edition from the filename.
-
-Plex uses editions to specify different versions of movies.
-We can use this to differentiate between different versions of UFC files.
+fighter names (title), and edition from the filename. Plex uses editions
+to specify different versions of movies. We can use this to differentiate
+between different versions of UFC files.
 
 The editions used in output filenames are: Early Prelims, Prelims, and Main Event.
 
@@ -17,7 +15,6 @@ The formatting of the folder name and filenames is defined in the script.
 
 If the extraction is unsuccessful or any other errors occur, the script will
 print an error message and exit with a non-zero exit code.
-
 """
 
 import os
@@ -36,32 +33,36 @@ class Bracket(Enum):
     ROUND = "round"
 
 
-# full path to the destination folder
+# ====================== CONFIGURATION SECTION ======================
+
+# Full path to the destination folder
 DESTINATION_FOLDER = r"/mnt/media/Sport/"
 
-# ufc-specific category to make sure jobs from this category are either processed or failed
-# other categories will be ignored if processing fails, unless `STRICT_MATCHING` is True
+# UFC-specific category to ensure jobs from this category are processed or failed
+# Other categories will be ignored if processing fails, unless `STRICT_MATCHING` is True
 UFC_CATEGORY = "ufc"
 
-# if true, will remove existing files with the same edition and resolution in the name
-# if performing a bulk rename, this flag should be set to True to rename existing files
+# If True, will remove existing files with the same edition and resolution in the name
+# Set this to True to rename existing files during a bulk rename
 REPLACE_SAME_RES = False
 
-# if false, will not error out if the event number can't be found.
-# NOTE: If the category name is `UFC_CATEGORY`, `STRICT_MATCHING` will be set to True.
+# If False, will not error out if the event number can't be found
+# NOTE: If the category name is `UFC_CATEGORY`, `STRICT_MATCHING` will be set to True
 STRICT_MATCHING = False
 
-# Formatting configuration. The keys must match the output dict keys in extract_info().
-# define the order of the parts (value here will be the index, order of dict is not important)
-# if a part should not be used, set the value to None. `event_number` is required.
+# Formatting configuration. The keys must match the output dict keys in extract_info()
+# Define the order of the parts (value here will be the index, order of dict is not important)
+# If a part should not be used, set the value to None. `event_number` is required
 FORMAT_ORDER = {"event_number": 0, "fighter_names": 1, "edition": 2, "resolution": 3}
 
-# define which parts need brackets. Editions need curly brackets to be detected.
+# Define which parts need brackets. Editions need curly brackets to be detected
 FORMAT_TOKENS = {"edition": Bracket.CURLY, "resolution": Bracket.SQUARE}
 
-# define which parts are used in the folder name. Order used is the same as FORMAT_ORDER.
-# add 'edition' if you want each edition to have its own folder
+# Define which parts are used in the folder name. Order used is the same as FORMAT_ORDER
+# Add 'edition' if you want each edition to have its own folder
 FORMAT_FOLDER = {"event_number", "fighter_names"}
+
+# ===================================================================
 
 
 def exit_log(message: str = "", exit_code: int = 1) -> NoReturn:
@@ -79,7 +80,7 @@ def exit_log(message: str = "", exit_code: int = 1) -> NoReturn:
     """
 
     print(f"Error: {message}" if exit_code else message)
-    sys.exit(status=exit_code)
+    sys.exit(exit_code)
 
 
 def check_path(path: str) -> Path:
