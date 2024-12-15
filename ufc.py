@@ -68,6 +68,9 @@ DRY_RUN = False
 # Valid video file extensions
 VIDEO_EXTENSIONS = {".mp4", ".mkv", ".avi", ".mov"}
 
+# TODO: Subfolder to put the prelims in
+SUB_FOLDER = "Other"
+
 
 # ========================== FORMATTING CONFIGURATION ==========================
 # NOTE: The keys must match the attributes of VideoInfo (except `path`)
@@ -316,6 +319,8 @@ def extract_info(path: Path, strict: bool = True) -> VideoInfo:
             info.edition = {
                 "Preliminary": "Prelims",
             }.get(edition, edition)
+            info.edition = f"edition-{info.edition}"
+
 
     if not fighter_names and strict:
         # we need to go deeper
