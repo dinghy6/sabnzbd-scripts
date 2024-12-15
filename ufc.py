@@ -295,7 +295,7 @@ def extract_info(path: Path, strict: bool = True) -> VideoInfo:
     # Find the rest. Using global search because sometimes they appear out of order
     pattern = (
         # Fighter names (x vs y)
-        r"(?P<names>((?:(?<= )|(?<=^))(?!ppv|main|event|prelim|preliminary)[a-z-]+ )+vs( (?!ppv|main|prelim|early|web)[a-z-]+(?= |$))+(?: (?![0-9]{2,})[0-9])?)"
+        r"(?P<names>((?:(?<= )|(?<=^))(?!ppv|main|event|prelim|preliminary)[a-z-]+ )+vs( ?(?!ppv|main|prelim|early|web)[a-z-]+(?= |$))+(?: (?![0-9]{2,})[0-9])?)"
         # NOTE: If additional words end up in the name, add them to the regex
         # Edition (not including ppv because it is often ommitted)
         r"|(?P<edition>early prelims|prelims|preliminary)"
