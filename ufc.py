@@ -295,7 +295,7 @@ def extract_info(path: Path, strict: bool = True) -> VideoInfo:
     # Find the rest. Using global search because sometimes they appear out of order
     pattern = (
         # Fighter names (x vs y)
-        r"(?P<names>((?:(?<= )|(?<=^))(?!ppv|main|event|prelim|preliminary)[a-z-]+ )+vs( ?(?!ppv|main|prelim|early|web)[a-z-]+(?= |$))+(?: (?![0-9]{2,})[0-9])?)"
+        r"(?:(?<= )|(?<=^))(?P<name1>(?:(?!ppv|main|event|prelim|preliminary)[a-z-]+ )+)vs ?(?P<name2>(?:(?!ppv|main|prelim|early|web)[a-z-]+(?: |$))+)(?:(?![0-9]{2,})(?P<num>[0-9]))?"
         # NOTE: If additional words end up in the name, add them to the regex
         # Edition (not including ppv because it is often ommitted)
         r"|(?P<edition>early prelims|prelims|preliminary)"
@@ -304,10 +304,10 @@ def extract_info(path: Path, strict: bool = True) -> VideoInfo:
     matches = re.finditer(pattern, file_name, re.IGNORECASE)
 
     for match in matches:
-        if match.group("names"):
-            fighter_names = f"{match.group('names')}"
-            fighter_names = " ".join(w.title() for w in fighter_names.split())
-            fighter_names = fighter_names.replace(" Vs ", " vs ")
+        if match.group("name1") and match.group("name2"):
+            fighter_names = f"{match.group('name1').strip().title()} vs {match.group('name2').strip().title()}"
+            if match.group("num"):
+                fighter_names += f" {match.group('num')}"
 
         if match.group("edition"):
             edition = match.group("edition")
@@ -318,6 +318,7 @@ def extract_info(path: Path, strict: bool = True) -> VideoInfo:
             }.get(edition, edition)
 
     if not fighter_names and strict:
+        # we need to go deeper
         fighter_names = find_names(DESTINATION_FOLDER, info.event_number)
 
     info.fighter_names = fighter_names
