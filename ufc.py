@@ -34,6 +34,59 @@ class Bracket(Enum):
     ROUND = "round"
 
 
+# =========================== GLOBALS CONFIGURATION ============================
+
+# Full path to the destination folder
+DESTINATION_FOLDER: Path = Path(r"/mnt/media/Sport/")
+
+# UFC-specific category to ensure jobs from this category are processed or failed
+# Other categories will be ignored if processing fails, unless `STRICT_MATCHING` is True
+UFC_CATEGORY: str = "ufc"
+
+# If True, will remove existing files with the same edition and resolution in the name
+# Set this to True to rename existing files during a bulk rename
+REPLACE_SAME_RES: bool = False
+
+# If False, will not error out if the event number can't be found
+# NOTE: If the category name is `UFC_CATEGORY`, `STRICT_MATCHING` will be set to True
+STRICT_MATCHING: bool = False
+
+# If True, will not make any changes
+DRY_RUN: bool = False
+
+# Valid video file extensions
+VIDEO_EXTENSIONS: set[str] = {".mp4", ".mkv", ".avi", ".mov"}
+
+# TODO: Name of subfolder to put the prelims in. Set to None or "" to disable
+# NOTE: This will make prelims unavailable until the main event is processed
+SUB_FOLDER: str | None = "Other"
+
+
+# ========================== FORMATTING CONFIGURATION ==========================
+# NOTE: The keys must match the attributes of VideoInfo (except `path`)
+
+# Define the order of the parts (value here will be the index, order of dict is not important)
+# If a part should not be used, set the value to None. `event_number` is required
+FORMAT_ORDER: dict[str, int | None] = {
+    "event_number": 0,
+    "fighter_names": 1,
+    "edition": 2,
+    "resolution": 3,
+}
+
+# Define which parts need brackets. Editions need curly brackets to be detected
+FORMAT_TOKENS: dict[str, Bracket] = {
+    "edition": Bracket.CURLY,
+    "resolution": Bracket.SQUARE,
+}
+
+# Define which parts are used in the folder name. Order used is the same as FORMAT_ORDER
+# Add 'edition' if you want each edition to have its own folder
+FORMAT_FOLDER: set[str] = {"event_number", "fighter_names"}
+
+# ==============================================================================
+
+
 @dataclass
 class VideoInfo:
     """Defines video information extracted from the file name."""
@@ -44,49 +97,59 @@ class VideoInfo:
     resolution: str = ""
     path: Path = Path("")
 
+    def __init__(self, path: Path, strict: bool = True) -> None:
+        """
+        Extracts information from a UFC video file name.
 
-# =========================== GLOBALS CONFIGURATION ============================
+        Cleans up the file name then calls get_ functions to extract information.
 
-# Full path to the destination folder
-DESTINATION_FOLDER = Path(r"/mnt/media/Sport/")
+        First tries to find the UFC event number. If not found and strict
+        is True, the script exits. How it exits is determined by the
+        STRICT_MATCHING variable.
 
-# UFC-specific category to ensure jobs from this category are processed or failed
-# Other categories will be ignored if processing fails, unless `STRICT_MATCHING` is True
-UFC_CATEGORY = "ufc"
+        If fighter names are not found and strict is True, find_names()
+        is called to attempt to find them from an existing folder.
 
-# If True, will remove existing files with the same edition and resolution in the name
-# Set this to True to rename existing files during a bulk rename
-REPLACE_SAME_RES = False
+        If the extraction is successful, assigns info to class attributes.
 
-# If False, will not error out if the event number can't be found
-# NOTE: If the category name is `UFC_CATEGORY`, `STRICT_MATCHING` will be set to True
-STRICT_MATCHING = False
+        :param path: The path of the file to extract information from
+        :type path: str
+        :param strict: Whether to try hard or not
+        :type strict: bool
+        """
 
-# If True, will not make any changes
-DRY_RUN = False
+        self.path = path
 
-# Valid video file extensions
-VIDEO_EXTENSIONS = {".mp4", ".mkv", ".avi", ".mov"}
+        # Unify separators to spaces to make regex patterns less ungodly
+        file_name = re.sub(r"[\.\s_]", " ", path.name)
 
-# TODO: Subfolder to put the prelims in
-SUB_FOLDER = "Other"
+        event_number = get_event_number(file_name)
 
+        if not event_number and strict:
+            if STRICT_MATCHING:
+                # error exit
+                exit_log(
+                    f"Unable to extract UFC event number from {file_name}", exit_code=1
+                )
+            else:
+                # silent exit
+                exit_log(exit_code=0)
 
-# ========================== FORMATTING CONFIGURATION ==========================
-# NOTE: The keys must match the attributes of VideoInfo (except `path`)
+        fighter_names = get_fighter_names(file_name)
 
-# Define the order of the parts (value here will be the index, order of dict is not important)
-# If a part should not be used, set the value to None. `event_number` is required
-FORMAT_ORDER = {"event_number": 0, "fighter_names": 1, "edition": 2, "resolution": 3}
+        if not fighter_names and strict:
+            # we need to go deeper
+            fighter_names = find_names(DESTINATION_FOLDER, event_number)
 
-# Define which parts need brackets. Editions need curly brackets to be detected
-FORMAT_TOKENS = {"edition": Bracket.CURLY, "resolution": Bracket.SQUARE}
+        edition = get_edition(file_name)
 
-# Define which parts are used in the folder name. Order used is the same as FORMAT_ORDER
-# Add 'edition' if you want each edition to have its own folder
-FORMAT_FOLDER = {"event_number", "fighter_names"}
+        if not SUB_FOLDER or (SUB_FOLDER and edition == "Main Event"):
+            edition = "edition-" + edition
 
-# ==============================================================================
+        self.event_number = event_number
+        self.fighter_names = fighter_names
+        self.edition = edition
+        self.resolution = get_resolution(file_name)
 
 
 def exit_log(message: str = "", exit_code: int = 1) -> NoReturn:
@@ -133,15 +196,106 @@ def check_path(path: str) -> Path:
     return directory
 
 
+def get_event_number(file_name: str) -> str:
+    """
+    Extracts the event number from a video file name.
+
+    Returns a string of the event number or if no event number is found, returns "".
+
+    :param file_name: The file name
+    :type file_name: str
+    :return: The extracted event number or empty string if no event number is found.
+    :rtype: str
+    """
+
+    # there are also 'UFC Live' events which will not be caught, but they usually
+    # don't have a number anyway
+    # old pattern with named groups: r"ufc (?P<ppv>\d{1,4})|ufc fight night (?P<fnight>\d{1,4})|ufc on (?P<ufc_on>\w+ \d{1,4})"
+    pattern = r"ufc (?P<ppv>\d{1,4})|ufc fight night (?P<fnight>\d{1,4})|ufc on (?P<ufc_on>\w+ \d{1,4})"
+    match = re.search(pattern, file_name, re.IGNORECASE)
+
+    if not match:
+        return ""
+    if match.group("ppv"):
+        return "UFC " + match.group("ppv")
+    if match.group("fnight"):
+        return "UFC Fight Night " + match.group("fnight")
+    if match.group("ufc_on"):
+        return "UFC on " + match.group("ufc_on").upper()
+    return ""
+
+
+def get_fighter_names(file_name: str) -> str:
+    """
+    Extracts the fighter names from a video file name.
+
+    Returns a string of the fighter names found or if no names are found, returns "".
+
+    :param file_name: The file name
+    :type file_name: str
+    :return: The extracted names or empty string if no names are found.
+    :rtype: str
+    """
+
+    # This is a delicate baby
+    pattern = (
+        r"(?:(?<= )|(?<=^))"  # lookbehind for start of string or space
+        r"(?P<name1>(?:(?!ppv|main|event|prelim|preliminary)[a-z-]+ )+)"
+        #      can add more words to exclude in the start ^
+        r"vs ?"  #         or the end of the names v
+        r"(?P<name2>(?:(?!ppv|main|prelim|early|web)[a-z-]+(?: |$))+)"
+        r"(?:(?![0-9]{2,})(?P<num>[0-9]))?"  # optional rematch number
+    )
+
+    match = re.search(pattern, file_name, re.IGNORECASE)
+
+    if not match:
+        return ""
+
+    return (
+        match.group("name1").strip().title()
+        + " vs "
+        + match.group("name2").strip().title()
+        + (f" {match.group('num')}" if match.group("num") else "")
+    )
+
+
+def get_edition(file_name: str) -> str:
+    """
+    Extracts the edition from a video file name.
+
+    Returns a string of the edition. Defaults to "Main Event".
+
+    :param file_name: The file name
+    :type file_name: str
+    :return: The extracted edition
+    :rtype: str
+    """
+
+    pattern = r"early prelims|prelims|preliminary"
+
+    match = re.search(pattern, file_name, re.IGNORECASE)
+
+    edition = "Main Event"
+
+    if match:
+        edition = match.group(0).title()
+        # Can add more weird editions to fix if necessary
+        edition = {"Preliminary": "Prelims"}.get(edition, edition)
+
+    return edition
+
+
 def get_resolution(file_name: str) -> str:
     """
     Extracts the resolution from a video file name. Not trying to be perfect here.
 
-    Returns a string of the resolution and scan mode or if no resolution is found, returns None.
+    Returns a string of the resolution and scan mode or if no resolution is
+    found, returns "". 4K and UHD are treated as 2160p
 
     :param file_name: The file name
     :type file_name: str
-    :return: The extracted resolution or None if no resolution is found.
+    :return: The extracted resolution or "" if no resolution is found.
     :rtype: str
     """
 
@@ -151,7 +305,7 @@ def get_resolution(file_name: str) -> str:
     return "" if not match else match.group(0)
 
 
-def get_editions(path: Path, event_number: str) -> dict[str, VideoInfo]:
+def find_editions(path: Path, event_number: str) -> dict[str, VideoInfo]:
     """
     Scans the given directory and extracts editions from the file names.
 
@@ -169,11 +323,10 @@ def get_editions(path: Path, event_number: str) -> dict[str, VideoInfo]:
     :rtype: dict[str, VideoInfo]
     """
 
-    editions_in_folder = {}
+    editions_in_folder: dict[str, VideoInfo] = {}
     for file in path.glob(f"{event_number}*", case_sensitive=False):
         if file.is_file():
-            info = extract_info(file, strict=False)
-
+            info = VideoInfo(file, strict=False)
             if info.edition and info.event_number == event_number:
                 editions_in_folder[info.edition] = info
 
@@ -227,7 +380,7 @@ def find_names(directory: Path = DESTINATION_FOLDER, event_number: str = "") -> 
     """
 
     for path in directory.glob(f"{event_number}*", case_sensitive=False):
-        info = extract_info(path, strict=False)
+        info = VideoInfo(path, strict=False)
 
         if path.is_dir() and not info.fighter_names:
             # If the folder doesn't have fighter names, check inside
@@ -237,100 +390,6 @@ def find_names(directory: Path = DESTINATION_FOLDER, event_number: str = "") -> 
             return info.fighter_names
 
     return ""
-
-
-def extract_info(path: Path, strict: bool = True) -> VideoInfo:
-    """
-    Extract UFC event number, fighter names, and edition from a filename.
-
-    Uses regex to extract the information from the filename.
-    First tries to find the UFC event number. If not found and strict
-    is True, the script exits. How it exits is determined by the
-    STRICT_MATCHING variable.
-
-    If fighter names are not found and strict is True, find_names()
-    is called to attempt to find them from an existing folder.
-
-    If the extraction is successful, returns a dictionary of info found.
-
-    :param path: The path of the file to extract information from
-    :type path: str
-    :param strict: Whether to try hard or not
-    :type strict: bool
-    :return: A VideoInfo object with the extracted information
-    :rtype: VideoInfo
-    """
-
-    # Unify separators to spaces
-    file_name = re.sub(r"[\.\s_]", " ", path.stem)
-
-    event_number, fighter_names, edition = "", "", ""
-
-    info = VideoInfo(path=path)
-
-    # Event number
-    # there are also 'UFC Live' events which will not be caught, but they usually
-    # don't have a number anyway
-    pattern = r"ufc (?P<ppv>\d{1,4})|ufc fight night (?P<fnight>\d{1,4})|ufc on (?P<ufc_on>\w+ \d{1,4})"
-    match = re.search(pattern, file_name, re.IGNORECASE)
-
-    if not match and strict:
-        if STRICT_MATCHING:
-            # error exit
-            exit_log(
-                f"Unable to extract UFC event number from {file_name}", exit_code=1
-            )
-        else:
-            # silent exit
-            exit_log(exit_code=0)
-
-    elif match:
-        if match.group("ppv"):
-            event_number = f"UFC {match.group('ppv')}"
-        elif match.group("fnight"):
-            event_number = f"UFC Fight Night {match.group('fnight')}"
-        elif match.group("ufc_on"):
-            event_number = f"UFC on {match.group('ufc_on').upper()}"
-        info.event_number = event_number
-
-    # file_name = file_name[:match.start()] + file_name[match.end():]
-
-    # Find the rest. Using global search because sometimes they appear out of order
-    pattern = (
-        # Fighter names (x vs y)
-        r"(?:(?<= )|(?<=^))(?P<name1>(?:(?!ppv|main|event|prelim|preliminary)[a-z-]+ )+)vs ?(?P<name2>(?:(?!ppv|main|prelim|early|web)[a-z-]+(?: |$))+)(?:(?![0-9]{2,})(?P<num>[0-9]))?"
-        # NOTE: If additional words end up in the name, add them to the regex
-        # Edition (not including ppv because it is often ommitted)
-        r"|(?P<edition>early prelims|prelims|preliminary)"
-    )
-
-    matches = re.finditer(pattern, file_name, re.IGNORECASE)
-
-    for match in matches:
-        if match.group("name1") and match.group("name2"):
-            fighter_names = f"{match.group('name1').strip().title()} vs {match.group('name2').strip().title()}"
-            if match.group("num"):
-                fighter_names += f" {match.group('num')}"
-
-        if match.group("edition"):
-            edition = match.group("edition")
-            edition = " ".join(w.capitalize() for w in edition.split())
-            # Correct weird edition names
-            info.edition = {
-                "Preliminary": "Prelims",
-            }.get(edition, edition)
-            info.edition = f"edition-{info.edition}"
-
-
-    if not fighter_names and strict:
-        # we need to go deeper
-        fighter_names = find_names(DESTINATION_FOLDER, info.event_number)
-
-    info.fighter_names = fighter_names
-
-    info.resolution = get_resolution(file_name)
-
-    return info
 
 
 def construct_path(file_path: Path) -> tuple[Path, VideoInfo]:
@@ -343,13 +402,13 @@ def construct_path(file_path: Path) -> tuple[Path, VideoInfo]:
     :param file_path: The full path to the original video file.
     :type file_path: Path
     :return: A tuple containing the new file path and a dictionary of extracted information.
-    :rtype: tuple[Path, dict[str, str]]
+    :rtype: tuple[Path, VideoInfo]
     """
 
     parts = [""] * len(FORMAT_ORDER)
     folder_parts = [""] * len(FORMAT_ORDER)
 
-    info = extract_info(file_path)
+    info = VideoInfo(file_path)
 
     for field in fields(VideoInfo):
         key, value = field.name, getattr(info, field.name)
@@ -363,7 +422,7 @@ def construct_path(file_path: Path) -> tuple[Path, VideoInfo]:
 
         index = FORMAT_ORDER[key]
 
-        if index is None:
+        if index is None or index < 0 or index >= len(parts):
             # part is ommitted
             continue
 
@@ -382,10 +441,15 @@ def construct_path(file_path: Path) -> tuple[Path, VideoInfo]:
     # e.g. UFC Fight Night 248 Yan vs Figueiredo
     folder_name = " ".join(filter(None, folder_parts))
 
+    dest = DESTINATION_FOLDER / folder_name
+
+    if SUB_FOLDER and info.edition and info.edition != "edition-Main Event":
+        dest = dest / SUB_FOLDER
+
     # e.g. UFC Fight Night 248 Yan vs Figueiredo {edition-Main Event} [1080p].mkv
     file_name = " ".join(filter(None, parts)) + file_path.suffix
 
-    return (DESTINATION_FOLDER / folder_name / file_name), info
+    return (dest / file_name), info
 
 
 def move_file(src: Path, dst: Path) -> tuple[str, int]:
@@ -440,8 +504,8 @@ def rename_and_move(file_path: Path) -> tuple[str, int]:
         # folder doesn't exist so nothing else to do
         return move_file(info.path, new_path)
 
-    # find existing video file with same edition and event number
-    existing = get_editions(new_path.parent, info.event_number)
+    # find if an existing video file with same edition and event number exists
+    existing = find_editions(new_path.parent, info.event_number)
 
     if not existing or not existing.get(info.edition):
         # folder doesn't have this edition
