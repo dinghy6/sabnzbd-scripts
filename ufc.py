@@ -458,6 +458,44 @@ def construct_path(file_path: Path) -> tuple[Path, VideoInfo]:
     return (dest / file_name), info
 
 
+def fix_permissions(path: Path) -> None:
+    """
+    Changes the ownership of a folder and all its parents to the same as its grandparent.
+
+    This is used to fix permissions of folders created by this script. Only works on Linux.
+    Attempt to set the same ownership as DESTINATION_FOLDER for all folders it created.
+
+    :param path: The folder to start the recursion from.
+    :type path: Path
+    :raises OSError: If the ownership cannot be changed.
+    """
+
+    if not path.exists() or not path.is_dir() or path == DESTINATION_FOLDER or not hasattr(os, "chown"):
+        return
+
+    if not path.is_relative_to(DESTINATION_FOLDER):
+        # probably configuration error, so alert
+        print(f"Error: {path} is not a child of {DESTINATION_FOLDER}")
+        return
+
+    if path.parent != DESTINATION_FOLDER:
+        # start at bottom
+        fix_permissions(path.parent)
+
+    uid = os.stat(DESTINATION_FOLDER).st_uid
+    gid = os.stat(DESTINATION_FOLDER).st_gid
+
+    p_uid = os.stat(path).st_uid
+    p_gid = os.stat(path).st_gid
+
+    if uid != p_uid or gid != p_gid:
+        try:
+            os.chown(path, uid, gid)
+            print(f"Changed ownership of {path} to {uid}:{gid}")
+        except OSError as e:
+            raise OSError(f"Failed to change ownership of {path}: {e}")
+
+
 def move_file(src: Path, dst: Path) -> tuple[str, int]:
     """
     Moves a file from its original location to a new location.
@@ -475,25 +513,15 @@ def move_file(src: Path, dst: Path) -> tuple[str, int]:
 
     parent = dst.parent
 
-    if not parent.parent.exists():
-        # should only ever have to create two levels or directories
-        return f"Parent directory {parent.parent} does not exist", 1
-
     # retain permissions
-    mode = os.stat(parent.parent).st_mode
+    mode = os.stat(DESTINATION_FOLDER).st_mode
 
-    try:
-        parent.mkdir(mode=mode, parents=True, exist_ok=True)
-        if hasattr(os, "chown") and parent != DESTINATION_FOLDER:
-            parent_uid = os.stat(parent.parent).st_uid
-            parent_gid = os.stat(parent.parent).st_gid
-
-            print(f"Changing ownership of {parent} to {
-                  parent_uid}:{parent_gid}")
-            os.chown(parent, parent_uid, parent_gid)
-
-    except OSError as e:
-        return f"Failed to create directory {dst.parent}: {e}", 1
+    if not parent.exists():
+        try:
+            parent.mkdir(mode=mode, parents=True, exist_ok=True)
+            fix_permissions(parent)
+        except OSError as e:
+            return f"Failed to create directory {parent}: {e}", 1
 
     try:
         shutil.move(src, dst)
