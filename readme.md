@@ -28,7 +28,7 @@ Subfolders are supported if configured in the `SUB_FOLDER` variable. Subfolders 
 * Resolves conflicts by comparing resolutions. Replaces lower res with higher, etc.
 * Can do a bulk renaming to re-organize existing UFC libraries in the destination to the configured format
 	* Even supports moving from having subfolders to no subfolders and vice versa
-* Fully customizable naming scheme (see [[#Formatting]])
+* Fully customizable naming scheme (see [Formatting](#formatting))
 
 
 ## Configuration
@@ -49,12 +49,12 @@ These define various behaviours of the script. The type is explicitly specified 
 
 ### Formatting
 
-The format the script uses to make and rename files and folders can be customized. The script can also rename existing libraries to the customized format (see [[#Usage]]).
+The format the script uses to make and rename files and folders can be customized. The script can also rename existing libraries to the customized format (see [Usage](#usage)).
 
 Important notes:
  - The `event_number` should always be first (with a value of `0`)
  - For Plex to pick up the correct edition, `Bracket.CURLY` should be set for `edition`
- - Adding brackets to `fighter_names` will mess up the regexes for detecting them. this may be fixed later
+ - Adding brackets to `fighter_names` will mess up the regexes for detecting them. This may be fixed later
  - The keys must match the attributes of `VideoInfo` (but don't include `path`). These can be seen just below the formatting section and are already filled in as the default values.
 
 `FORMAT_ORDER` - The values for each part is the order that they will be in the folder name and file name, starting with `event_number` at `0`.
@@ -78,15 +78,15 @@ See more information on SABnzbd scripts [here](https://sabnzbd.org/wiki/configur
 Can run on its own with arguments (run `ufc.py -h` for more info)
 Useful commands:
  - `ufc.py --rename-all --remove-empty`: This finds all the UFC files in the destination directory and organizes them into the configured format. This can be used to apply the current formatting to all existing UFC files. Empty folders will be removed.
-	 - should run this first with `--dry-run` to see the changes that will be made
-   - `ufc.py /path/to/job`: This runs a rename and move on the supplied directory.
-   - `ufc.py -d /path/to/job -c ufc`: The job directory is passed with `-d` and the job category is passed with `-c`. Can also use `--dir="/path" --category="ufc"`.
+	- should run this first with `--dry-run` to see the changes that will be made
+ - `ufc.py /path/to/job`: This runs a rename and move on the supplied directory.
+ - `ufc.py -d /path/to/job -c ufc`: The job directory is passed with `-d` and the job category is passed with `-c`. Can also use `--dir="/path" --category="ufc"`.
 
 
 ## Requirements
 
 * Python 3.9+
-*  Modules: `os`, `sys`, `re`, `argparse`, `shutil`, `dataclasses`, `pathlib`, `enum`, `typing`
+* Modules: `os`, `sys`, `re`, `argparse`, `shutil`, `dataclasses`, `pathlib`, `enum`, `typing`
 
 
 ## Notes
