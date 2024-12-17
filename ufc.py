@@ -57,7 +57,7 @@ DRY_RUN: bool = False
 # Valid video file extensions
 VIDEO_EXTENSIONS: set[str] = {".mp4", ".mkv", ".avi", ".mov"}
 
-# TODO: Name of subfolder to put the prelims in. Set to None or "" to disable
+# Name of subfolder to put the prelims in. Set to None or "" to disable
 # NOTE: This will make prelims unavailable until the main event is processed
 SUB_FOLDER: str | None = "Other"
 
@@ -170,7 +170,7 @@ def exit_log(message: str = "", exit_code: int = 1) -> NoReturn:
     sys.exit(exit_code)
 
 
-def check_path(path: str) -> Path:
+def check_path(path, error: bool = True) -> Path | None:
     """
     Checks if the given path exists and is a directory.
 
@@ -178,7 +178,9 @@ def check_path(path: str) -> Path:
     If the path does not exist or is not a directory, raises a NotADirectoryError.
 
     :param path: The path to check.
-    :type path: str
+    :type path: any
+    :param error: Whether to raise an error if the path does not exist or is not a directory.
+    :type error: bool
     :return: The Path object of the given directory.
     :rtype: Path
     :raises NotADirectoryError: If the path does not exist or is not a directory.
@@ -186,12 +188,16 @@ def check_path(path: str) -> Path:
 
     try:
         directory = Path(path)
-        if not directory.exists() or not directory.is_dir():
+        if not (directory.exists() and directory.is_dir()):
             raise NotADirectoryError(
-                f"Directory path '{directory}' does not exist or is not a directory"
+                f"Directory path '{
+                    directory}' does not exist or is not a directory"
             )
-    except (TypeError, ValueError) as e:
-        raise NotADirectoryError(str(e)) from e
+    except (TypeError, ValueError, NotADirectoryError) as e:
+        if error:
+            raise NotADirectoryError(str(e)) from e
+        else:
+            return None
 
     return directory
 
@@ -242,7 +248,7 @@ def get_fighter_names(file_name: str) -> str:
         r"(?:(?<= )|(?<=^))"  # lookbehind for start of string or space
         r"(?P<name1>(?:(?!ppv|main|event|prelim|preliminary)[a-z-]+ )+)"
         #      can add more words to exclude in the start ^
-        r"vs ?"  #         or the end of the names v
+        r"vs ?"  # or the end of the names v
         r"(?P<name2>(?:(?!ppv|main|prelim|early|web)[a-z-]+(?: |$))+)"
         r"(?:(?![0-9]{2,})(?P<num>[0-9]))?"  # optional rematch number
     )
@@ -526,7 +532,8 @@ def rename_and_move(file_path: Path) -> tuple[str, int]:
     if new_res == old_res:
         if not REPLACE_SAME_RES:
             return (
-                f"File {x_info.path.name} already exists in {new_path.parent} with the same resolution.",
+                f"File {x_info.path.name} already exists in {
+                    new_path.parent} with the same resolution.",
                 1,
             )
 
@@ -539,7 +546,8 @@ def rename_and_move(file_path: Path) -> tuple[str, int]:
     elif new_res < old_res:
         # If the existing file has a higher resolution, error
         return (
-            f"File {x_info.path.name} already exists in {new_path.parent} with a higher resolution.",
+            f"File {x_info.path.name} already exists in {
+                new_path.parent} with a higher resolution.",
             1,
         )
 
@@ -555,6 +563,58 @@ def rename_and_move(file_path: Path) -> tuple[str, int]:
                 print(f"Error deleting file: {e}")
 
         return move_file(info.path, new_path)
+
+
+def bulk_rename(directory: Path = DESTINATION_FOLDER, remove_empty: bool = False) -> int:
+    """
+    Recursively renames and moves files in the directory.
+
+    If remove_empty is True, empty folders will be removed after renaming.
+    This is useful for re-organization of existing files and should be run
+    after changing the formatting configuration.
+
+    NOTE: This function is recursive and can be destructive.
+
+    :param directory: The directory to rename files in.
+    :type directory: Path
+    :param remove_empty: Whether to remove empty folders after renaming.
+    :type remove_empty: bool
+    :return: 0 if successful, 1 or more if an error occurs or a file wasn't moved.
+    :rtype: int
+    """
+
+    dirs = list(directory.glob("*"))
+
+    res = 0
+
+    print(f"Renaming files in {directory}")
+
+    for path in dirs:
+        if path.name.startswith("."):
+            continue
+
+        subres = 0
+
+        if path.is_dir():
+            subres = bulk_rename(path, remove_empty)
+
+            if not subres and remove_empty and not any(path.iterdir()):
+
+                if DRY_RUN:
+                    print(f"Removing empty folder {path}")
+                else:
+                    path.rmdir()
+
+        elif path.is_file() and path.suffix in VIDEO_EXTENSIONS:
+            message, exit_code = rename_and_move(path)
+
+            print("Error: " + message if exit_code else message)
+
+            subres = exit_code
+
+        res += subres
+
+    return res
 
 
 def parse_args():
@@ -601,7 +661,7 @@ def parse_args():
         help="Rename all UFC folders and files in the directory. Use with caution.",
     )
     parser.add_argument(
-        "--remove-renamed",
+        "--remove-empty",
         action="store_true",
         help="Remove empty folders after renaming.",
     )
@@ -624,38 +684,17 @@ def parse_args():
     if args.dry_run:
         globals()["DRY_RUN"] = True
 
-    directory = args.dir
+    try:
+        directory = check_path(args.dir)
+        if not directory:
+            exit_log("Invalid starting directory.", exit_code=1)
+    except NotADirectoryError as e:
+        exit_log(f"Invalid starting directory: {e}", exit_code=1)
 
     if not args.rename_all:
         return directory
 
-    try:
-        directory = check_path(directory)
-    except NotADirectoryError as e:
-        exit_log(str(e), exit_code=1)
-
-    # rename all UFC folders and files in given directory
-    dirs = [d for d in directory.iterdir() if d.is_dir()]
-
-    for folder in dirs:
-        if folder.is_dir():
-            renamed = True  # so that we don't try to delete if there was an error
-
-            for file in folder.iterdir():
-                if file.is_file() and file.suffix in VIDEO_EXTENSIONS:
-                    message, exit_code = rename_and_move(file)
-
-                    print("Error: " + message if exit_code else message)
-
-                    if exit_code:
-                        renamed = False
-
-            if renamed and args.remove_renamed and (len(list(folder.iterdir())) == 0):
-                if args.DRY_RUN:
-                    print(f"Removing empty folder {folder}")
-                else:
-                    folder.rmdir()
-
+    bulk_rename(directory, args.remove_empty)
     exit_log("Done.", exit_code=0)
 
 
@@ -675,12 +714,12 @@ def main() -> None:
     :return: None
     """
 
-    directory, category = None, None
-
     if len(sys.argv) == 1:
         exit_log("Not enough arguments.", exit_code=1)
 
-    if len(sys.argv) == 2:
+    directory, category = check_path(sys.argv[1], False), None
+
+    if len(sys.argv) == 2 and directory:
         # only a job path is provided
         directory = sys.argv[1]
 
@@ -700,6 +739,8 @@ def main() -> None:
 
     try:
         directory = check_path(directory)
+        if not directory:
+            raise NotADirectoryError(directory)
     except NotADirectoryError as e:
         exit_log(f"Invalid job directory: {e}", exit_code=1)
 
