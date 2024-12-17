@@ -473,8 +473,25 @@ def move_file(src: Path, dst: Path) -> tuple[str, int]:
     if DRY_RUN:
         return f"Moved {src} to {dst}", 0
 
+    parent = dst.parent
+
+    if not parent.parent.exists():
+        # should only ever have to create two levels or directories
+        return f"Parent directory {parent.parent} does not exist", 1
+
+    # retain permissions
+    mode = os.stat(parent.parent).st_mode
+
     try:
-        dst.parent.mkdir(parents=True, exist_ok=True)
+        parent.mkdir(mode=mode, parents=True, exist_ok=True)
+        if hasattr(os, "chown") and parent != DESTINATION_FOLDER:
+            parent_uid = os.stat(parent.parent).st_uid
+            parent_gid = os.stat(parent.parent).st_gid
+
+            print(f"Changing ownership of {parent} to {
+                  parent_uid}:{parent_gid}")
+            os.chown(parent, parent_uid, parent_gid)
+
     except OSError as e:
         return f"Failed to create directory {dst.parent}: {e}", 1
 
