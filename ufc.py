@@ -25,10 +25,12 @@ import shutil
 from dataclasses import dataclass, fields
 from pathlib import Path
 from enum import Enum
-from typing import NoReturn
+from typing import NoReturn, Any
 
 
 class Bracket(Enum):
+    """Enum for bracket types."""
+
     SQUARE = "square"
     CURLY = "curly"
     ROUND = "round"
@@ -54,7 +56,7 @@ STRICT_MATCHING: bool = False
 # If True, will not make any changes
 DRY_RUN: bool = False
 
-# Valid video file extensions
+# Valid video file extensions (should be lowercase)
 VIDEO_EXTENSIONS: set[str] = {".mp4", ".mkv", ".avi", ".mov"}
 
 # Name of subfolder to put the prelims in. Set to None or "" to disable
@@ -118,30 +120,40 @@ class VideoInfo:
         :type strict: bool
         """
 
+        if not path or not path.exists():
+            exit_log(f"File {path} does not exist", exit_code=1)
+
         self.path = path
 
         # Unify separators to spaces to make regex patterns less ungodly
-        file_name = re.sub(r"[\.\s_]", " ", path.name)
+        name = re.sub(r"[\.\s_]", " ", path.name)
 
-        event_number = get_event_number(file_name)
+        event_number = get_event_number(name)
+
+        if not event_number:
+            # might be obfuscated, check folder name
+            folder_name = re.sub(r"[\.\s_]", " ", path.parent.name)
+            event_number = get_event_number(folder_name)
+            if event_number:
+                name = folder_name
 
         if not event_number and strict:
             if STRICT_MATCHING:
                 # error exit
                 exit_log(
-                    f"Unable to extract UFC event number from {file_name}", exit_code=1
+                    f"Unable to extract UFC event number from {name}", exit_code=1
                 )
             else:
                 # silent exit
                 exit_log(exit_code=0)
 
-        fighter_names = get_fighter_names(file_name)
+        fighter_names = get_fighter_names(name)
 
         if not fighter_names and strict:
             # we need to go deeper
             fighter_names = find_names(DESTINATION_FOLDER, event_number)
 
-        edition = get_edition(file_name)
+        edition = get_edition(name)
 
         if not SUB_FOLDER or (SUB_FOLDER and edition == "Main Event"):
             edition = "edition-" + edition
@@ -149,7 +161,7 @@ class VideoInfo:
         self.event_number = event_number
         self.fighter_names = fighter_names
         self.edition = edition
-        self.resolution = get_resolution(file_name)
+        self.resolution = get_resolution(name)
 
 
 def exit_log(message: str = "", exit_code: int = 1) -> NoReturn:
@@ -170,7 +182,7 @@ def exit_log(message: str = "", exit_code: int = 1) -> NoReturn:
     sys.exit(exit_code)
 
 
-def check_path(path, error: bool = True) -> Path | None:
+def check_path(path: Any, error: bool = True) -> Path | None:
     """
     Checks if the given path exists and is a directory.
 
@@ -187,6 +199,8 @@ def check_path(path, error: bool = True) -> Path | None:
     """
 
     try:
+        if not isinstance(path, (str, Path)):
+            raise TypeError("Path must be a string or Path object")
         directory = Path(path)
         if not (directory.exists() and directory.is_dir()):
             raise NotADirectoryError(
@@ -196,8 +210,7 @@ def check_path(path, error: bool = True) -> Path | None:
     except (TypeError, ValueError, NotADirectoryError) as e:
         if error:
             raise NotADirectoryError(str(e)) from e
-        else:
-            return None
+        return None
 
     return directory
 
@@ -216,8 +229,11 @@ def get_event_number(file_name: str) -> str:
 
     # there are also 'UFC Live' events which will not be caught, but they usually
     # don't have a number anyway
-    # old pattern with named groups: r"ufc (?P<ppv>\d{1,4})|ufc fight night (?P<fnight>\d{1,4})|ufc on (?P<ufc_on>\w+ \d{1,4})"
-    pattern = r"ufc (?P<ppv>\d{1,4})|ufc fight night (?P<fnight>\d{1,4})|ufc on (?P<ufc_on>\w+ \d{1,4})"
+    pattern = (
+        r"ufc ?(?P<ppv>\d+)"
+        r"|ufc ?fight ?night (?P<fnight>\d+)"
+        r"|ufc ?on ?(?P<ufc_on>\w+ \d+)"
+    )
     match = re.search(pattern, file_name, re.IGNORECASE)
 
     if not match:
@@ -330,7 +346,7 @@ def find_editions(path: Path, event_number: str) -> dict[str, VideoInfo]:
     """
 
     editions_in_folder: dict[str, VideoInfo] = {}
-    for file in path.glob(f"{event_number}*", case_sensitive=False):
+    for file in path.glob(f"*{event_number}*", case_sensitive=False):
         if file.is_file():
             info = VideoInfo(file, strict=False)
             if info.edition and info.event_number == event_number:
@@ -354,11 +370,13 @@ def find_largest_video_file(video_path: Path) -> Path | None:
     :rtype: Path | None
     """
 
-    if not video_path.exists() or not video_path.is_dir():
+    if not video_path.is_dir():
         return None
 
     video_files = [
-        f for f in video_path.iterdir() if f.is_file() and f.suffix in VIDEO_EXTENSIONS
+        f
+        for f in video_path.iterdir()
+        if f.is_file() and f.suffix.lower() in VIDEO_EXTENSIONS
     ]
 
     if not video_files:
@@ -458,6 +476,31 @@ def construct_path(file_path: Path) -> tuple[Path, VideoInfo]:
     return (dest / file_name), info
 
 
+def is_valid_folder_name(name: str) -> bool:
+    """
+    Light validation for folder names:
+    - No invalid characters: \\ / : * ? " < > |
+    - Cannot be empty or just spaces
+    - Cannot start or end with spaces
+
+    :param name: Folder name to validate.
+    :return: True if valid, False otherwise.
+    """
+
+    if not name or name.strip() == "":  # Empty or spaces only
+        return False
+
+    # Check for invalid characters
+    if re.search(r"[\\\/\:\*\?\"\<\>\|]", name):
+        return False
+
+    # Check for leading/trailing spaces
+    if name != name.strip():
+        return False
+
+    return True
+
+
 def fix_permissions(path: Path) -> None:
     """
     Changes the ownership of a folder and all its parents to the same as its grandparent.
@@ -470,10 +513,14 @@ def fix_permissions(path: Path) -> None:
     :raises OSError: If the ownership cannot be changed.
     """
 
-    if not path.exists() or not path.is_dir() or path == DESTINATION_FOLDER or not hasattr(os, "chown"):
+    if not path.exists() or not path.is_dir() or not hasattr(os, "chown"):
         return
 
-    if not path.is_relative_to(DESTINATION_FOLDER):
+    if not os.access(path, os.W_OK):
+        print(f"Error: {path} is not writable")
+        return
+
+    if path == DESTINATION_FOLDER or not path.is_relative_to(DESTINATION_FOLDER):
         # probably configuration error, so alert
         print(f"Error: {path} is not a child of {DESTINATION_FOLDER}")
         return
@@ -490,10 +537,11 @@ def fix_permissions(path: Path) -> None:
 
     if uid != p_uid or gid != p_gid:
         try:
+            # type: ignore # pylint: disable=no-member
             os.chown(path, uid, gid)
             print(f"Changed ownership of {path} to {uid}:{gid}")
         except OSError as e:
-            raise OSError(f"Failed to change ownership of {path}: {e}")
+            raise OSError(f"Failed to change ownership of {path}: {e}") from e
 
 
 def move_file(src: Path, dst: Path) -> tuple[str, int]:
@@ -558,59 +606,44 @@ def rename_and_move(file_path: Path) -> tuple[str, int]:
     # find if an existing video file with same edition and event number exists
     existing = find_editions(new_path.parent, info.event_number)
 
-    if not existing or not existing.get(info.edition):
-        # folder doesn't have this edition
-        return move_file(info.path, new_path)
+    x_info = existing.get(info.edition)
 
-    # edition already exists in folder
-
-    x_info = existing[info.edition]
-
-    if x_info.path == file_path:
-        # just a rename
+    if x_info is None or x_info.path == file_path:
         return move_file(info.path, new_path)
 
     # if there is no resolution in either, the new file is preferred
     new_res = int(info.resolution[:-1] or 99999)
     old_res = int(x_info.resolution[:-1] or 0)
 
-    if new_res == old_res:
-        if not REPLACE_SAME_RES:
+    if new_res == old_res or new_res > old_res:
+        if new_res == old_res and not REPLACE_SAME_RES:
             return (
-                f"File {x_info.path.name} already exists in {
-                    new_path.parent} with the same resolution.",
+                f"File {x_info.path.name} already exists in "
+                f"{new_path.parent} with the same resolution.",
                 1,
             )
 
         if not DRY_RUN:
-            x_info.path.unlink()
-
-        print(f"Replacing {x_info.path.name} with {new_path.name}")
-        return move_file(info.path, new_path)
-
-    elif new_res < old_res:
-        # If the existing file has a higher resolution, error
-        return (
-            f"File {x_info.path.name} already exists in {
-                new_path.parent} with a higher resolution.",
-            1,
-        )
-
-    else:
-        # If the downloaded file has a higher resolution, replace the existing file
-        if DRY_RUN:
-            print(f"Removed lower resolution file {x_info.path.name}")
-        else:
             try:
-                Path(x_info.path).unlink()
-                print(f"Removed lower resolution file {x_info.path.name}")
+                x_info.path.unlink()
             except OSError as e:
                 print(f"Error deleting file: {e}")
 
+        print(f"Replacing {x_info.path.name} with {new_path.name}")
+
         return move_file(info.path, new_path)
 
+    # If the existing file has a higher resolution, error
+    return (
+        f"File {x_info.path.name} already exists in "
+        f"{new_path.parent} with a higher resolution.",
+        1,
+    )
 
-def bulk_rename(directory: Path = DESTINATION_FOLDER, remove_empty: bool = False) -> int:
+
+def bulk_rename(
+    directory: Path = DESTINATION_FOLDER, remove_empty: bool = False
+) -> int:
     """
     Recursively renames and moves files in the directory.
 
@@ -628,14 +661,14 @@ def bulk_rename(directory: Path = DESTINATION_FOLDER, remove_empty: bool = False
     :rtype: int
     """
 
-    dirs = list(directory.glob("*"))
-
     res = 0
 
     print(f"Renaming files in {directory}")
 
-    for path in dirs:
+    for entry in os.scandir(directory):
+        path = Path(entry.path)
         if path.name.startswith("."):
+            # skip hidden
             continue
 
         subres = 0
@@ -644,16 +677,19 @@ def bulk_rename(directory: Path = DESTINATION_FOLDER, remove_empty: bool = False
             subres = bulk_rename(path, remove_empty)
 
             if not subres and remove_empty and not any(path.iterdir()):
-
                 if DRY_RUN:
                     print(f"Removing empty folder {path}")
                 else:
-                    path.rmdir()
+                    try:
+                        path.rmdir()
+                        print(f"Removed empty folder {path}")
+                    except OSError as e:
+                        print(f"Error deleting folder: {e}")
 
-        elif path.is_file() and path.suffix in VIDEO_EXTENSIONS:
+        elif path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS:
             message, exit_code = rename_and_move(path)
 
-            print("Error: " + message if exit_code else message)
+            print("DNF: " + message if exit_code else message)
 
             subres = exit_code
 
@@ -683,7 +719,10 @@ def parse_args():
     parser.add_argument(
         "-c",
         "--category",
-        help="The category of the download. If it matches UFC_CATEGORY, STRICT_MATCHING will be set to True",
+        help=(
+            "The category of the download. If it matches UFC_CATEGORY, "
+            "STRICT_MATCHING will be set to True"
+        ),
     )
     parser.add_argument(
         "-D", "--dest", help="The destination folder for the renamed files"
@@ -762,13 +801,16 @@ def main() -> None:
     if len(sys.argv) == 1:
         exit_log("Not enough arguments.", exit_code=1)
 
+    if SUB_FOLDER and not is_valid_folder_name(SUB_FOLDER):
+        exit_log(f'Invalid subfolder name: "{SUB_FOLDER}"', exit_code=1)
+
     directory, category = check_path(sys.argv[1], False), None
 
     if len(sys.argv) == 2 and directory:
         # only a job path is provided
         directory = sys.argv[1]
 
-    elif os.getenv("SAB_VERSION"):
+    elif os.getenv("SAB_COMPLETE_DIR") and os.getenv("SAB_CAT"):
         # running from SABnzbd
         # Print newlines so the 'more' button is available in sabnzbd
         print("\n\n")
