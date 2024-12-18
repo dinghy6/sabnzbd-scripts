@@ -642,10 +642,13 @@ def rename_and_move(file_path: Path) -> tuple[str, int]:
 
 
 def bulk_rename(
-    directory: Path = DESTINATION_FOLDER, remove_empty: bool = False
+    directory: Path = DESTINATION_FOLDER, remove_empty: bool = False, in_ufc_folder: bool = False
 ) -> int:
     """
     Recursively renames and moves files in the directory.
+
+    Param in_ufc_folder is used to skip the event number check for recursive
+    calls. Can be set to True to avoid the check.
 
     If remove_empty is True, empty folders will be removed after renaming.
     This is useful for re-organization of existing files and should be run
@@ -657,6 +660,8 @@ def bulk_rename(
     :type directory: Path
     :param remove_empty: Whether to remove empty folders after renaming.
     :type remove_empty: bool
+    :param in_ufc_folder: If directory is a UFC folder.
+    :type in_ufc_folder: bool
     :return: 0 if successful, 1 or more if an error occurs or a file wasn't moved.
     :rtype: int
     """
@@ -671,10 +676,15 @@ def bulk_rename(
             # skip hidden
             continue
 
+        if not in_ufc_folder or not get_event_number(path.name):
+            # Checks if the folder has an event number. This check is skipped
+            # if we're already in a UFC folder
+            continue
+
         subres = 0
 
         if path.is_dir():
-            subres = bulk_rename(path, remove_empty)
+            subres = bulk_rename(path, remove_empty, in_ufc_folder=True)
 
             if not subres and remove_empty and not any(path.iterdir()):
                 if DRY_RUN:
