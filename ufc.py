@@ -19,6 +19,7 @@ print an error message and exit with a non-zero exit code.
 
 import os
 import sys
+import stat
 import re
 import argparse
 import shutil
@@ -501,23 +502,122 @@ def is_valid_folder_name(name: str) -> bool:
     return True
 
 
-def fix_permissions(path: Path) -> None:
+def not_posix() -> bool:
     """
-    Changes the ownership of a folder and all its parents to the same as its grandparent.
+    Checks if the script is not running on a POSIX system. 
 
-    This is used to fix permissions of folders created by this script. Only works on Linux.
-    Attempt to set the same ownership as DESTINATION_FOLDER for all folders it created.
+    :return: True if the script is not running on a POSIX system, False otherwise.
+    :rtype: bool
+    """
+
+    if os.name != "posix":
+        return True
+
+    return False
+
+
+def fix_permissions(path: Path, ref_uid: int, ref_gid: int, ref_mode: int) -> None:
+    """
+    Ensures this script and the ref user can rwx to the given path.
+
+    Fixes the permissions of a given path by setting the permissions to at least
+    770. If the script is running as root, the owner will be changed to the
+    owner of the reference path.
+
+    If the permissions or owner cannot be changed, raises a PermissionError with
+    a message suggesting how to fix the permissions manually.
+
+    :param path: The path to fix permissions for.
+    :type path: Path
+    :param ref_uid: The user ID of the reference path.
+    :type ref_uid: int
+    :param ref_gid: The group ID of the reference path.
+    :type ref_gid: int
+    :param ref_mode: The mode of the reference path.
+    :type ref_mode: int
+    :raises PermissionError: If the permissions or owner cannot be changed.
+    """
+
+    if not_posix():
+        return
+
+    scr_uid = os.getuid()  # type: ignore pylint: disable=no-member
+    root = scr_uid == 0
+
+    if not root or scr_uid != os.stat(path).st_uid:
+        # Can't fix permissions
+        raise PermissionError(
+            f"Cannot fix permissions of {path} because the script is not "
+            f"running as the owner or root. Try running chown manually:\n"
+            f"sudo chown -R {scr_uid}:{scr_uid} \"{path}\"\n"
+        )
+
+    # The script is running as root or owns the path
+
+    print(f"Error: {path} has insufficient permissions. Trying to fix.")
+
+    min_mode = stat.S_IRWXU | stat.S_IRWXG
+
+    # If running as root, the owner will be changed to ref_uid, so 770 is enough
+    if not root and scr_uid != ref_uid and scr_uid != ref_gid:
+        min_mode |= stat.S_IRWXO
+
+    # Make sure the mode is at least 770
+    new_mode = min_mode | ref_mode
+
+    try:
+        # Change permissions (chmod)
+        os.chmod(path, ref_mode)
+        print(f"Changed permissions of {path} to {oct(ref_mode)}")
+
+    except PermissionError as e:
+        raise PermissionError(
+            f"Failed to change permissions of {path}: {e}. "
+            f"\nTry running chmod manually:\n"
+            f"sudo chmod {oct(new_mode)} \"{path}\""
+        ) from e
+    except OSError as e:
+        raise OSError(f"Failed to change permissions of {path}: {e}") from e
+
+    if not root:
+        # Done all we can
+        return
+
+    new_owner = f"{ref_uid}:{ref_gid}"
+    try:
+        # Changing ownership so that folders aren't owned by root
+        if ref_uid != 0:
+            # type: ignore pylint: disable=no-member
+            os.chown(path, ref_uid, ref_gid)
+            print(f"Changed ownership of {path} to {ref_uid}:{ref_gid}")
+    except PermissionError as e:
+        raise PermissionError(
+            f"Failed to change ownership of {path}: {e}. "
+            f"\nTry running chown manually:\n"
+            f"sudo chown -R {new_owner} \"{path}\""
+        ) from e
+
+
+def check_permissions(path: Path, ref: os.stat_result) -> None:
+    """
+    The goal is to make the folder created by this script writable by the user.
+
+    Only works on POSIX systems. if permissions need to be changed, they are set
+    to at least 770. If running as root, the owner will be changed to the same
+    owner as ref.
 
     :param path: The folder to start the recursion from.
     :type path: Path
-    :raises OSError: If the ownership cannot be changed.
+    :param ref: The reference stat object.
+    :type ref: os.stat_result
+    :raises OSError: If the permissions or owner must be changed but cannot be changed.
     """
 
-    if not path.exists() or not path.is_dir() or not hasattr(os, "chown"):
+    if not_posix():
         return
 
-    if not os.access(path, os.W_OK):
-        print(f"Error: {path} is not writable")
+    if path.is_dir() and not os.access(path, os.W_OK):
+        print(f"Error: {path} is not valid and writable")
         return
 
     if path == DESTINATION_FOLDER or not path.is_relative_to(DESTINATION_FOLDER):
@@ -526,22 +626,25 @@ def fix_permissions(path: Path) -> None:
         return
 
     if path.parent != DESTINATION_FOLDER:
-        # start at bottom
-        fix_permissions(path.parent)
+        # start at top
+        check_permissions(path.parent, ref)
 
-    uid = os.stat(DESTINATION_FOLDER).st_uid
-    gid = os.stat(DESTINATION_FOLDER).st_gid
+    # Get reference and current stats
+    ref_uid, ref_gid = ref.st_uid, ref.st_gid
+    ref_mode = ref.st_mode & 0o777
 
-    p_uid = os.stat(path).st_uid
-    p_gid = os.stat(path).st_gid
+    cur_stat = os.stat(path)
+    cur_mode = cur_stat.st_mode & 0o777
 
-    if uid != p_uid or gid != p_gid:
-        try:
-            # type: ignore # pylint: disable=no-member
-            os.chown(path, uid, gid)
-            print(f"Changed ownership of {path} to {uid}:{gid}")
-        except OSError as e:
-            raise OSError(f"Failed to change ownership of {path}: {e}") from e
+    # Check if permissions are already sufficient
+    has_user_access = cur_stat.st_uid == ref_uid and (
+        cur_mode & stat.S_IRWXU) == stat.S_IRWXU
+    has_group_access = cur_stat.st_gid == ref_gid and (
+        cur_mode & stat.S_IRWXG) == stat.S_IRWXG
+    has_other_access = (cur_mode & stat.S_IRWXO) == stat.S_IRWXO
+
+    if not (has_user_access or has_group_access or has_other_access):
+        fix_permissions(path, ref_uid, ref_gid, ref_mode)
 
 
 def move_file(src: Path, dst: Path) -> tuple[str, int]:
@@ -561,15 +664,20 @@ def move_file(src: Path, dst: Path) -> tuple[str, int]:
 
     parent = dst.parent
 
-    # retain permissions
-    mode = os.stat(DESTINATION_FOLDER).st_mode
+    ref_stat = os.stat(DESTINATION_FOLDER)
+
+    # inherit permissions, minimum 770
+    mode = (ref_stat.st_mode & 0o777) | stat.S_IRWXU | stat.S_IRWXG
 
     if not parent.exists():
         try:
             parent.mkdir(mode=mode, parents=True, exist_ok=True)
-            fix_permissions(parent)
         except OSError as e:
             return f"Failed to create directory {parent}: {e}", 1
+        try:
+            check_permissions(parent, ref_stat)
+        except OSError as e:
+            return f"Failed to correct permissions of {parent}: {e}", 1
 
     try:
         shutil.move(src, dst)
