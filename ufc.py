@@ -733,10 +733,13 @@ def get_minimum_permissions(path: Path) -> int:
         # At least 770
         wanted = Config.folder_permissions & 0o777
         min_mode = stat.S_IRWXU | stat.S_IRWXG
-    else:
+    elif path.is_file():
         # At least 660
         wanted = Config.file_permissions & 0o777
         min_mode = stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IWGRP
+    else:
+        exit_log(f"Permission check failed: {path} is not a file or directory", 1)
+
 
     return wanted | min_mode
 
@@ -782,8 +785,6 @@ def fix_permissions(
         )
 
     # The script is running as root or owns the path
-
-    print(f"Error: {path} has wrong permissions. Trying to fix.")
 
     try:
         os.chmod(path, target)
@@ -878,16 +879,23 @@ def move_file(src: Path, dst: Path) -> tuple[str, int]:
     ref_stat = os.stat(Config.destination_folder)
 
     # Get permissions, minimum 770
-    mode = get_minimum_permissions(parent)
+    mode = get_minimum_permissions(src.parent)
 
     if not parent.exists():
         try:
-            parent.mkdir(mode=mode, parents=True, exist_ok=True)
+            parent.mkdir(mode=0o770, parents=True, exist_ok=True)
+            print(f"Setting permissions of {parent} to {oct(mode)}")
+            os.chmod(parent, mode)
         except OSError as e:
             return f"Failed to create directory {parent}: {e}", 1
 
+    # Get permissions, minimum 660
+    mode = get_minimum_permissions(src)
+
     try:
         shutil.move(src, dst)
+        print(f"Setting permissions of {dst} to {oct(mode)}")
+        os.chmod(dst, mode)
     except shutil.Error as e:
         return f"Failed to move {src} to {dst}: {e}", 1
 
