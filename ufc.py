@@ -9,7 +9,7 @@ between different versions of UFC files.
 The editions used in output filenames are: Early Prelims, Prelims, and Main Event.
 
 If the extraction is successful, the script will create a new folder in
-DESTINATION_FOLDER. It will then rename and move the file to the new folder.
+destination_folder. It will then rename and move the file to the new folder.
 
 The formatting of the folder name and filenames is defined in the script.
 
@@ -18,15 +18,20 @@ print an error message and exit with a non-zero exit code.
 """
 
 import os
+import re
 import sys
 import stat
-import re
-import argparse
 import shutil
-from dataclasses import dataclass, fields
-from pathlib import Path
+import argparse
 from enum import Enum
-from typing import NoReturn, Any
+from pathlib import Path
+from configparser import ConfigParser
+from dataclasses import dataclass, fields
+from typing import NoReturn, ClassVar, Any, Set, Dict
+
+# Define the configuration file path. Defaults to ufc.ini in the script directory.
+# This will fallback to {filename}.template if the main file does not exist.
+INI_PATH = Path(__file__).parent / "ufc.ini"
 
 
 class Bracket(Enum):
@@ -37,57 +42,12 @@ class Bracket(Enum):
     ROUND = "round"
 
 
-# =========================== GLOBALS CONFIGURATION ============================
+class Edition(Enum):
+    """Enum for UFC event editions."""
 
-# Full path to the destination folder
-DESTINATION_FOLDER: Path = Path(r"/mnt/media/Sport/")
-
-# UFC-specific category to ensure jobs from this category are processed or failed
-# Other categories will be ignored if processing fails, unless `STRICT_MATCHING` is True
-UFC_CATEGORY: str = "ufc"
-
-# If True, will remove existing files with the same edition and resolution in the name
-# Set this to True to rename existing files during a bulk rename
-REPLACE_SAME_RES: bool = False
-
-# If False, will not error out if the event number can't be found
-# NOTE: If the category name is `UFC_CATEGORY`, `STRICT_MATCHING` will be set to True
-STRICT_MATCHING: bool = False
-
-# If True, will not make any changes
-DRY_RUN: bool = False
-
-# Valid video file extensions (should be lowercase)
-VIDEO_EXTENSIONS: set[str] = {".mp4", ".mkv", ".avi", ".mov"}
-
-# Name of subfolder to put the prelims in. Set to None or "" to disable
-# NOTE: This will make prelims unavailable until the main event is processed
-SUB_FOLDER: str | None = "Other"
-
-
-# ========================== FORMATTING CONFIGURATION ==========================
-# NOTE: The keys must match the attributes of VideoInfo (except `path`)
-
-# Define the order of the parts (value here will be the index, order of dict is not important)
-# If a part should not be used, set the value to None. `event_number` is required
-FORMAT_ORDER: dict[str, int | None] = {
-    "event_number": 0,
-    "fighter_names": 1,
-    "edition": 2,
-    "resolution": 3,
-}
-
-# Define which parts need brackets. Editions need curly brackets to be detected
-FORMAT_TOKENS: dict[str, Bracket] = {
-    "edition": Bracket.CURLY,
-    "resolution": Bracket.SQUARE,
-}
-
-# Define which parts are used in the folder name. Order used is the same as FORMAT_ORDER
-# Add 'edition' if you want each edition to have its own folder
-FORMAT_FOLDER: set[str] = {"event_number", "fighter_names"}
-
-# ==============================================================================
+    EARLY_PRELIMS = "Early Prelims"
+    PRELIMS = "Prelims"
+    MAIN_EVENT = "Main Event"
 
 
 @dataclass
@@ -96,7 +56,7 @@ class VideoInfo:
 
     event_number: str = ""
     fighter_names: str = ""
-    edition: str = ""
+    edition: Edition = Edition.MAIN_EVENT
     resolution: str = ""
     path: Path = Path("")
 
@@ -139,11 +99,9 @@ class VideoInfo:
                 name = folder_name
 
         if not event_number and strict:
-            if STRICT_MATCHING:
+            if Config.strict_matching:
                 # error exit
-                exit_log(
-                    f"Unable to extract UFC event number from {name}", exit_code=1
-                )
+                exit_log(f"Unable to extract UFC event number from {name}", exit_code=1)
             else:
                 # silent exit
                 exit_log(exit_code=0)
@@ -152,17 +110,236 @@ class VideoInfo:
 
         if not fighter_names and strict:
             # we need to go deeper
-            fighter_names = find_names(DESTINATION_FOLDER, event_number)
+            fighter_names = find_names(Config.destination_folder, event_number)
 
         edition = get_edition(name)
-
-        if not SUB_FOLDER or (SUB_FOLDER and edition == "Main Event"):
-            edition = "edition-" + edition
 
         self.event_number = event_number
         self.fighter_names = fighter_names
         self.edition = edition
         self.resolution = get_resolution(name)
+
+
+@dataclass(frozen=False)
+class Config:
+    """
+    Configuration settings for the UFC file controller.
+
+    This class uses class variables to store global configuration settings.
+    All settings are loaded from an INI file at startup.
+
+    :cvar destination_folder: Root folder for UFC videos
+    :cvar ufc_category: Category name for UFC downloads
+    :cvar strict_matching: Whether to enforce strict name matching
+    :cvar replace_same_res: Whether to replace files with same resolution
+    :cvar dry_run: Whether to simulate operations without changes
+    :cvar video_extensions: Set of valid video file extensions
+    :cvar subfolder: Name of subfolder for non-main events
+    :cvar format_order: Order and position of parts in filenames
+    :cvar format_tokens: Bracket style for each part
+    :cvar format_folder: Parts to include in folder names
+    :cvar format_subfolder: Parts to include in filenames inside subfolders
+
+    Note:
+        All settings are class variables (ClassVar) to maintain global state.
+        Settings are loaded from an INI file and validated at startup.
+    """
+
+    destination_folder: ClassVar[Path] = Path("/mnt/media/Sport/")
+    ufc_category: ClassVar[str] = "ufc"
+    strict_matching: ClassVar[bool] = False
+    replace_same_res: ClassVar[bool] = False
+    dry_run: ClassVar[bool] = False
+    video_extensions: ClassVar[Set[str]] = {".mp4", ".mkv", ".avi", ".mov"}
+    subfolder: ClassVar[str | None] = "Other"
+    file_permissions: ClassVar[int] = 0o664
+    folder_permissions: ClassVar[int] = 0o770
+    format_order: ClassVar[Dict[str, int | None]] = {
+        "event_number": 0,
+        "fighter_names": 1,
+        "edition": 2,
+        "resolution": 3,
+    }
+    format_tokens: ClassVar[Dict[str, "Bracket"]] = {
+        "edition": Bracket.CURLY,
+        "resolution": Bracket.SQUARE,
+    }
+    format_folder: ClassVar[Set[str]] = {"event_number", "fighter_names"}
+    format_subfolder: ClassVar[Set[str]] = {"event_number", "edition"}
+    refresh_perms: ClassVar[bool] = False
+
+    @classmethod
+    def update(cls, **kwargs) -> None:
+        """Update config values"""
+        for key, value in kwargs.items():
+            if hasattr(cls, key):
+                setattr(cls, key, value)
+
+    @classmethod
+    def load_from_ini(cls, path: Path) -> None:
+        """
+        Load configuration settings from an INI file.
+
+        Reads the INI file at the given path and updates the class configuration variables.
+        Validates the configuration sections and keys before applying any changes.
+
+        :param path: Path to the INI configuration file
+        :type path: Path
+        :raises ValueError: If validation fails due to missing/invalid sections/keys
+        """
+
+        config = ConfigParser(allow_no_value=True)
+
+        # Try reading the config file, fallback to template if it doesn't exist
+        if path.exists():
+            config.read(path)
+        else:
+            template_path = path.parent / (path.name + ".template")
+            if template_path.exists():
+                config.read(template_path)
+                print(f"Configuration file not found, using {template_path}")
+            else:
+                raise FileNotFoundError(
+                    f"Neither {path.name} nor {template_path.name} exist"
+                )
+
+        cls._validate_configuration(config)
+
+        # Load paths
+        cls.destination_folder = Path(config["Paths"]["destination_folder"])
+
+        # Load categories
+        cls.ufc_category = config["Categories"]["ufc_category"]
+        cls.strict_matching = (
+            config["Categories"].getboolean("strict_matching") or cls.strict_matching
+        )
+
+        # Load file handling
+        cls.replace_same_res = (
+            config["FileHandling"].getboolean("replace_same_res")
+            or cls.replace_same_res
+        )
+        cls.dry_run = config["FileHandling"].getboolean("dry_run") or cls.dry_run
+        cls.video_extensions = set(
+            ext.strip().lower()
+            for ext in config["FileHandling"]["video_extensions"].split(",")
+        )
+        perm = ""
+        try:
+            perm = config["FileHandling"]["file_permissions"]
+            cls.file_permissions = int(perm, 8)
+            perm = config["FileHandling"]["folder_permissions"]
+            cls.folder_permissions = int(perm, 8)
+        except ValueError as e:
+            raise ValueError(
+                f"Invalid permission value in configuration: {perm}"
+            ) from e
+
+        # Handle nullable subfolder name
+        subfolder = config["FileHandling"]["subfolder"]
+        subfolder = None if subfolder.lower() in ("none", "") else subfolder
+        if subfolder and not is_valid_folder_name(subfolder):
+            raise ValueError(f'Invalid subfolder name: "{subfolder}"')
+        cls.subfolder = subfolder
+
+        # Load format order
+        cls.format_order = {}
+        for key in config["Format.Order"]:
+            value = config["Format.Order"][key]
+            if value in ("none", ""):
+                cls.format_order[key] = None
+            elif value.isdigit():
+                cls.format_order[key] = int(value)
+            else:
+                raise ValueError(f"Invalid format order value: {value}")
+
+        # Load format tokens
+        cls.format_tokens = {}
+        for key in config["Format.Brackets"]:
+            value = config["Format.Brackets"][key]
+            if hasattr(Bracket, value.upper()):
+                cls.format_tokens[key] = Bracket[value.upper()]
+            else:
+                raise ValueError(f"Invalid bracket type: {value}")
+
+        # Load format folder
+        cls.format_folder = set(config["Format.Folder"]["parts"].split(","))
+
+        # Load format subfolder
+        cls.format_subfolder = set(config["Format.Subfolder"]["parts"].split(","))
+
+    @classmethod
+    def _validate_configuration(cls, config: ConfigParser) -> None:
+        """
+        Validate the configuration.
+
+        Checks if all required sections and keys are present in the config file,
+        and validates that all format parts used in various sections are valid VideoInfo fields.
+
+        :param config: ConfigParser object containing the configuration
+        :type config: configparser.ConfigParser
+        :raises ValueError: If validation fails, with details in the error message
+        """
+
+        format_parts = set(f.name for f in fields(VideoInfo)) - {"path"}
+
+        # Validate config sections and keys
+        required = {
+            "Paths": ["destination_folder"],
+            "Categories": ["ufc_category", "strict_matching"],
+            "FileHandling": [
+                "replace_same_res",
+                "dry_run",
+                "video_extensions",
+                "subfolder",
+                "file_permissions",
+                "folder_permissions",
+            ],
+            "Format.Order": [],  # Dynamic keys
+            "Format.Brackets": [],  # Dynamic keys
+            "Format.Folder": ["parts"],
+            "Format.Subfolder": ["parts"],
+        }
+
+        # Validate all sections and keys exist
+        missing = []
+        for section, keys in required.items():
+            if section not in config:
+                missing.append(f"Missing section: {section}")
+                continue
+            for key in keys:
+                if key not in config[section]:
+                    missing.append(f"Missing key in {section}: {key}")
+
+        if missing:
+            raise ValueError("Configuration validation failed:\n" + "\n".join(missing))
+
+        # Check for invalid keys
+        order_keys = set(config["Format.Order"].keys())
+
+        errors = []
+
+        # Order keys must match valid parts exactly
+        if format_parts != order_keys:
+            missing = format_parts - order_keys
+            extra = order_keys - format_parts
+            if missing:
+                errors.append(f"Missing required format order parts: {missing}")
+            if extra:
+                errors.append(f"Unknown format order parts: {extra}")
+
+        # Other keys must be valid but can be subset
+        for name, parts in [
+            ("bracket", set(config["Format.Brackets"].keys())),
+            ("folder", set(config["Format.Folder"]["parts"].split(","))),
+            ("subfolder", set(config["Format.Subfolder"]["parts"].split(","))),
+        ]:
+            invalid = parts - format_parts
+            if invalid:
+                errors.append(f"Invalid {name} format parts: {invalid}")
+
+        if errors:
+            raise ValueError("Format parts validation failed:\n" + "\n".join(errors))
 
 
 def exit_log(message: str = "", exit_code: int = 1) -> NoReturn:
@@ -283,7 +460,7 @@ def get_fighter_names(file_name: str) -> str:
     )
 
 
-def get_edition(file_name: str) -> str:
+def get_edition(file_name: str) -> Edition:
     """
     Extracts the edition from a video file name.
 
@@ -296,17 +473,17 @@ def get_edition(file_name: str) -> str:
     """
 
     pattern = r"early prelims|prelims|preliminary"
-
     match = re.search(pattern, file_name, re.IGNORECASE)
 
-    edition = "Main Event"
+    edition = match.group(0).lower() if match else "main event"
 
-    if match:
-        edition = match.group(0).title()
-        # Can add more weird editions to fix if necessary
-        edition = {"Preliminary": "Prelims"}.get(edition, edition)
-
-    return edition
+    # Map string to enum
+    return {
+        "early prelims": Edition.EARLY_PRELIMS,
+        "prelims": Edition.PRELIMS,
+        "preliminary": Edition.PRELIMS,
+        "main event": Edition.MAIN_EVENT,
+    }.get(edition, Edition.MAIN_EVENT)
 
 
 def get_resolution(file_name: str) -> str:
@@ -328,7 +505,7 @@ def get_resolution(file_name: str) -> str:
     return "" if not match else match.group(0)
 
 
-def find_editions(path: Path, event_number: str) -> dict[str, VideoInfo]:
+def find_editions(path: Path, event_number: str) -> dict[Edition, VideoInfo]:
     """
     Scans the given directory and extracts editions from the file names.
 
@@ -346,11 +523,11 @@ def find_editions(path: Path, event_number: str) -> dict[str, VideoInfo]:
     :rtype: dict[str, VideoInfo]
     """
 
-    editions_in_folder: dict[str, VideoInfo] = {}
+    editions_in_folder: dict[Edition, VideoInfo] = {}
     for file in path.glob(f"*{event_number}*", case_sensitive=False):
         if file.is_file():
             info = VideoInfo(file, strict=False)
-            if info.edition and info.event_number == event_number:
+            if info.event_number == event_number:
                 editions_in_folder[info.edition] = info
 
     return editions_in_folder
@@ -377,7 +554,7 @@ def find_largest_video_file(video_path: Path) -> Path | None:
     video_files = [
         f
         for f in video_path.iterdir()
-        if f.is_file() and f.suffix.lower() in VIDEO_EXTENSIONS
+        if f.is_file() and f.suffix.lower() in Config.video_extensions
     ]
 
     if not video_files:
@@ -386,7 +563,9 @@ def find_largest_video_file(video_path: Path) -> Path | None:
     return max(video_files, key=lambda f: f.stat().st_size)
 
 
-def find_names(directory: Path = DESTINATION_FOLDER, event_number: str = "") -> str:
+def find_names(
+    directory: Path = Config.destination_folder, event_number: str = ""
+) -> str:
     """
     Attempts to find fighter names of a given ufc event from an existing folder.
 
@@ -404,7 +583,7 @@ def find_names(directory: Path = DESTINATION_FOLDER, event_number: str = "") -> 
     :rtype: str
     """
 
-    for path in directory.glob(f"{event_number}*", case_sensitive=False):
+    for path in directory.glob(f"*{event_number}*", case_sensitive=False):
         info = VideoInfo(path, strict=False)
 
         if path.is_dir() and not info.fighter_names:
@@ -430,48 +609,67 @@ def construct_path(file_path: Path) -> tuple[Path, VideoInfo]:
     :rtype: tuple[Path, VideoInfo]
     """
 
-    parts = [""] * len(FORMAT_ORDER)
-    folder_parts = [""] * len(FORMAT_ORDER)
+    parts = [""] * len(Config.format_order)
+    folder_parts = [""] * len(Config.format_order)
 
     info = VideoInfo(file_path)
 
-    for field in fields(VideoInfo):
-        key, value = field.name, getattr(info, field.name)
+    in_subfolder = bool(Config.subfolder and info.edition != Edition.MAIN_EVENT)
+
+    for attr in fields(VideoInfo):
+        key, value = attr.name, getattr(info, attr.name)
+
+        if isinstance(value, Enum):
+            value = value.value
 
         if not value or key == "path":
             continue
 
-        if key not in FORMAT_ORDER:
-            # configuration error
+        if key not in Config.format_order:
             exit_log(f"FORMAT_ORDER does not contain {key}", exit_code=1)
 
-        index = FORMAT_ORDER[key]
+        index = Config.format_order[key]
 
-        if index is None or index < 0 or index >= len(parts):
-            # part is ommitted
+        if index is None:
             continue
 
-        token = FORMAT_TOKENS.get(key)
+        if index < 0 or index >= len(parts):
+            exit_log(f'Invalid index "{index}" for part: {key}', exit_code=1)
 
+        # Add to Main folder name
+        if key in Config.format_folder:
+            folder_parts[index] = value
+
+        # Limit subfolder file parts
+        if in_subfolder and key not in Config.format_subfolder:
+            continue
+
+        if not in_subfolder and key == "edition":
+            # Add edition- so plex detects it as a different version
+            value = "edition-" + value
+
+        # Add brackets
+        token = Config.format_tokens.get(key)
         if token == Bracket.CURLY:
             value = "{" + value + "}"
         elif token == Bracket.SQUARE:
             value = "[" + value + "]"
+        elif token == Bracket.ROUND:
+            value = "(" + value + ")"
 
+        # Add to file name
         parts[index] = value
-
-        if key in FORMAT_FOLDER:
-            folder_parts[index] = value
 
     # e.g. UFC Fight Night 248 Yan vs Figueiredo
     folder_name = " ".join(filter(None, folder_parts))
 
-    dest = DESTINATION_FOLDER / folder_name
+    dest = Config.destination_folder / folder_name
 
-    if SUB_FOLDER and info.edition and info.edition != "edition-Main Event":
-        dest = dest / SUB_FOLDER
+    if in_subfolder and Config.subfolder:
+        dest = dest / Config.subfolder
 
     # e.g. UFC Fight Night 248 Yan vs Figueiredo {edition-Main Event} [1080p].mkv
+    # or for subfolders: UFC Fight Night 248 Prelims
     file_name = " ".join(filter(None, parts)) + file_path.suffix
 
     return (dest / file_name), info
@@ -504,7 +702,7 @@ def is_valid_folder_name(name: str) -> bool:
 
 def not_posix() -> bool:
     """
-    Checks if the script is not running on a POSIX system. 
+    Checks if the script is not running on a POSIX system.
 
     :return: True if the script is not running on a POSIX system, False otherwise.
     :rtype: bool
@@ -516,7 +714,36 @@ def not_posix() -> bool:
     return False
 
 
-def fix_permissions(path: Path, ref_uid: int, ref_gid: int, ref_mode: int) -> None:
+def get_minimum_permissions(path: Path) -> int:
+    """
+    Returns the minimum permissions required for a given path.
+
+    If the path is a directory, the minimum permissions are 770.
+    If the path is a file, the minimum permissions are 660.
+
+    If the preferred permissions are higher than the minimum, that is used instead.
+
+    :param path: The path to get minimum permissions for.
+    :type path: Path
+    :return: The minimum permissions required for the path.
+    :rtype: int
+    """
+
+    if path.is_dir():
+        # At least 770
+        wanted = Config.folder_permissions & 0o777
+        min_mode = stat.S_IRWXU | stat.S_IRWXG
+    else:
+        # At least 660
+        wanted = Config.file_permissions & 0o777
+        min_mode = stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IWGRP
+
+    return wanted | min_mode
+
+
+def fix_permissions(
+    path: Path, cur_stat: os.stat_result, ref_stat: os.stat_result, target: int
+) -> None:
     """
     Ensures this script and the ref user can rwx to the given path.
 
@@ -529,52 +756,43 @@ def fix_permissions(path: Path, ref_uid: int, ref_gid: int, ref_mode: int) -> No
 
     :param path: The path to fix permissions for.
     :type path: Path
-    :param ref_uid: The user ID of the reference path.
-    :type ref_uid: int
-    :param ref_gid: The group ID of the reference path.
-    :type ref_gid: int
-    :param ref_mode: The mode of the reference path.
-    :type ref_mode: int
+    :param cur_stat: The current stat result of the path.
+    :type cur_stat: os.stat_result
+    :param ref_stat: The reference stat result.
+    :type ref_stat: os.stat_result
+    :param target: The target permissions to set.
+    :type target: int
     :raises PermissionError: If the permissions or owner cannot be changed.
     """
 
     if not_posix():
         return
 
-    scr_uid = os.getuid()  # type: ignore pylint: disable=no-member
-    root = scr_uid == 0
+    ref_uid, ref_gid = ref_stat.st_uid, ref_stat.st_gid
 
-    if not root or scr_uid != os.stat(path).st_uid:
+    scr_uid = os.getuid()  # type: ignore pylint: disable=no-member
+    root = bool(scr_uid == 0)
+
+    if not root and scr_uid != cur_stat.st_uid:
         # Can't fix permissions
         raise PermissionError(
             f"Cannot fix permissions of {path} because the script is not "
             f"running as the owner or root. Try running chown manually:\n"
-            f"sudo chown -R {scr_uid}:{scr_uid} \"{path}\"\n"
+            f'sudo chown -R {scr_uid}:{scr_uid} "{path}"\n'
         )
 
     # The script is running as root or owns the path
 
-    print(f"Error: {path} has insufficient permissions. Trying to fix.")
-
-    min_mode = stat.S_IRWXU | stat.S_IRWXG
-
-    # If running as root, the owner will be changed to ref_uid, so 770 is enough
-    if not root and scr_uid != ref_uid and scr_uid != ref_gid:
-        min_mode |= stat.S_IRWXO
-
-    # Make sure the mode is at least 770
-    new_mode = min_mode | ref_mode
+    print(f"Error: {path} has wrong permissions. Trying to fix.")
 
     try:
-        # Change permissions (chmod)
-        os.chmod(path, ref_mode)
-        print(f"Changed permissions of {path} to {oct(ref_mode)}")
-
+        os.chmod(path, target)
+        print(f"Changed permissions of {path} to {oct(target)}")
     except PermissionError as e:
         raise PermissionError(
             f"Failed to change permissions of {path}: {e}. "
             f"\nTry running chmod manually:\n"
-            f"sudo chmod {oct(new_mode)} \"{path}\""
+            f'sudo chmod {oct(target)} "{path}"'
         ) from e
     except OSError as e:
         raise OSError(f"Failed to change permissions of {path}: {e}") from e
@@ -587,26 +805,28 @@ def fix_permissions(path: Path, ref_uid: int, ref_gid: int, ref_mode: int) -> No
     try:
         # Changing ownership so that folders aren't owned by root
         if ref_uid != 0:
-            # type: ignore pylint: disable=no-member
-            os.chown(path, ref_uid, ref_gid)
+            os.chown(path, ref_uid, ref_gid)  # type: ignore pylint: disable=no-member
             print(f"Changed ownership of {path} to {ref_uid}:{ref_gid}")
     except PermissionError as e:
         raise PermissionError(
             f"Failed to change ownership of {path}: {e}. "
             f"\nTry running chown manually:\n"
-            f"sudo chown -R {new_owner} \"{path}\""
+            f'sudo chown -R {new_owner} "{path}"'
         ) from e
 
 
 def check_permissions(path: Path, ref: os.stat_result) -> None:
     """
-    The goal is to make the folder created by this script writable by the user.
+    Apply desired permissions to the given path and its parent directories.
 
-    Only works on POSIX systems. if permissions need to be changed, they are set
-    to at least 770. If running as root, the owner will be changed to the same
-    owner as ref.
+    Only works on POSIX systems. Recursively checks the given path and its
+    parents starting from destination_folder. If the permissions or owner
+    are incorrect, they are changed to the desired values.
 
-    :param path: The folder to start the recursion from.
+    Minimum permissions are 770 for folders and 660 for files. The owner is
+    changed to the owner in the reference stat result.
+
+    :param path: The file or folder to start from.
     :type path: Path
     :param ref: The reference stat object.
     :type ref: os.stat_result
@@ -620,31 +840,22 @@ def check_permissions(path: Path, ref: os.stat_result) -> None:
         print(f"Error: {path} is not valid and writable")
         return
 
-    if path == DESTINATION_FOLDER or not path.is_relative_to(DESTINATION_FOLDER):
+    if not path.is_relative_to(Config.destination_folder):
         # probably configuration error, so alert
-        print(f"Error: {path} is not a child of {DESTINATION_FOLDER}")
+        print(f"Error: {path} is not a child of {Config.destination_folder}")
         return
 
-    if path.parent != DESTINATION_FOLDER:
+    if path.parent != Config.destination_folder:
         # start at top
         check_permissions(path.parent, ref)
 
-    # Get reference and current stats
-    ref_uid, ref_gid = ref.st_uid, ref.st_gid
-    ref_mode = ref.st_mode & 0o777
-
     cur_stat = os.stat(path)
-    cur_mode = cur_stat.st_mode & 0o777
+    target = get_minimum_permissions(path)
 
-    # Check if permissions are already sufficient
-    has_user_access = cur_stat.st_uid == ref_uid and (
-        cur_mode & stat.S_IRWXU) == stat.S_IRWXU
-    has_group_access = cur_stat.st_gid == ref_gid and (
-        cur_mode & stat.S_IRWXG) == stat.S_IRWXG
-    has_other_access = (cur_mode & stat.S_IRWXO) == stat.S_IRWXO
+    if (cur_stat.st_mode & 0o777) == target:
+        return
 
-    if not (has_user_access or has_group_access or has_other_access):
-        fix_permissions(path, ref_uid, ref_gid, ref_mode)
+    fix_permissions(path, cur_stat, ref, target)
 
 
 def move_file(src: Path, dst: Path) -> tuple[str, int]:
@@ -659,30 +870,31 @@ def move_file(src: Path, dst: Path) -> tuple[str, int]:
     :rtype: tuple[str, int]
     """
 
-    if DRY_RUN:
+    if Config.dry_run:
         return f"Moved {src} to {dst}", 0
 
     parent = dst.parent
 
-    ref_stat = os.stat(DESTINATION_FOLDER)
+    ref_stat = os.stat(Config.destination_folder)
 
-    # inherit permissions, minimum 770
-    mode = (ref_stat.st_mode & 0o777) | stat.S_IRWXU | stat.S_IRWXG
+    # Get permissions, minimum 770
+    mode = get_minimum_permissions(parent)
 
     if not parent.exists():
         try:
             parent.mkdir(mode=mode, parents=True, exist_ok=True)
         except OSError as e:
             return f"Failed to create directory {parent}: {e}", 1
-        try:
-            check_permissions(parent, ref_stat)
-        except OSError as e:
-            return f"Failed to correct permissions of {parent}: {e}", 1
 
     try:
         shutil.move(src, dst)
     except shutil.Error as e:
         return f"Failed to move {src} to {dst}: {e}", 1
+
+    try:
+        check_permissions(dst, ref_stat)
+    except OSError as e:
+        return f"Failed permission check: {e}", 1
 
     return f"Moved {src} to {dst}", 0
 
@@ -724,14 +936,14 @@ def rename_and_move(file_path: Path) -> tuple[str, int]:
     old_res = int(x_info.resolution[:-1] or 0)
 
     if new_res == old_res or new_res > old_res:
-        if new_res == old_res and not REPLACE_SAME_RES:
+        if new_res == old_res and not Config.replace_same_res:
             return (
                 f"File {x_info.path.name} already exists in "
                 f"{new_path.parent} with the same resolution.",
                 1,
             )
 
-        if not DRY_RUN:
+        if not Config.dry_run:
             try:
                 x_info.path.unlink()
             except OSError as e:
@@ -750,7 +962,9 @@ def rename_and_move(file_path: Path) -> tuple[str, int]:
 
 
 def bulk_rename(
-    directory: Path = DESTINATION_FOLDER, remove_empty: bool = False, in_ufc_folder: bool = False
+    directory: Path = Config.destination_folder,
+    remove_empty: bool = False,
+    in_ufc_folder: bool = False,
 ) -> int:
     """
     Recursively renames and moves files in the directory.
@@ -784,7 +998,7 @@ def bulk_rename(
             # skip hidden
             continue
 
-        if not in_ufc_folder or not get_event_number(path.name):
+        if not in_ufc_folder and not get_event_number(path.name):
             # Checks if the folder has an event number. This check is skipped
             # if we're already in a UFC folder
             continue
@@ -795,7 +1009,7 @@ def bulk_rename(
             subres = bulk_rename(path, remove_empty, in_ufc_folder=True)
 
             if not subres and remove_empty and not any(path.iterdir()):
-                if DRY_RUN:
+                if Config.dry_run:
                     print(f"Removing empty folder {path}")
                 else:
                     try:
@@ -804,8 +1018,15 @@ def bulk_rename(
                     except OSError as e:
                         print(f"Error deleting folder: {e}")
 
-        elif path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS:
+        elif path.is_file() and path.suffix.lower() in Config.video_extensions:
             message, exit_code = rename_and_move(path)
+
+            if Config.refresh_perms:
+                ref_stat = os.stat(Config.destination_folder)
+                try:
+                    check_permissions(path, ref_stat)
+                except OSError as e:
+                    print(f"Error: {e}")
 
             print("DNF: " + message if exit_code else message)
 
@@ -831,7 +1052,7 @@ def parse_args():
     parser.add_argument(
         "-d",
         "--dir",
-        default=DESTINATION_FOLDER,
+        default=Config.destination_folder,
         help="The directory containing the video files to be processed",
     )
     parser.add_argument(
@@ -872,19 +1093,25 @@ def parse_args():
         action="store_true",
         help="Print out the new filenames without actually moving the files.",
     )
+    parser.add_argument(
+        "--refresh-perms", action="store_true", help="Run a check on all permissions."
+    )
     args = parser.parse_args()
 
     if args.dest:
-        globals()["DESTINATION_FOLDER"] = args.dest
+        Config.update(destination_folder=Path(args.dest))
 
     if args.replace_same_res:
-        globals()["REPLACE_SAME_RES"] = True
+        Config.update(replace_same_res=True)
 
-    if args.strict_matching or args.category == UFC_CATEGORY:
-        globals()["STRICT_MATCHING"] = True
+    if args.strict_matching or args.category == Config.ufc_category:
+        Config.update(strict_matching=True)
 
     if args.dry_run:
-        globals()["DRY_RUN"] = True
+        Config.update(dry_run=True)
+
+    if args.refresh_perms:
+        Config.update(refresh_perms=True)
 
     try:
         directory = check_path(args.dir)
@@ -919,8 +1146,10 @@ def main() -> None:
     if len(sys.argv) == 1:
         exit_log("Not enough arguments.", exit_code=1)
 
-    if SUB_FOLDER and not is_valid_folder_name(SUB_FOLDER):
-        exit_log(f'Invalid subfolder name: "{SUB_FOLDER}"', exit_code=1)
+    try:
+        Config.load_from_ini(INI_PATH)
+    except (FileNotFoundError, ValueError) as e:
+        exit_log(f"Failed to load configuration: {e}", exit_code=1)
 
     directory, category = check_path(sys.argv[1], False), None
 
@@ -949,8 +1178,8 @@ def main() -> None:
     except NotADirectoryError as e:
         exit_log(f"Invalid job directory: {e}", exit_code=1)
 
-    if category == UFC_CATEGORY:
-        globals()["STRICT_MATCHING"] = True
+    if category == Config.ufc_category:
+        Config.update(strict_matching=True)
 
     # Filter video files
     video_file = find_largest_video_file(directory)

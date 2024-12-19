@@ -1,0 +1,73 @@
+; ==============================================================================
+;                        UFC File Controller Configuration
+; ==============================================================================
+
+[Paths]
+; Full path to the destination folder
+destination_folder=/mnt/media/Sport/
+
+[Categories]
+; If this category matches the job category, strict_matching will be ignored
+; and set to true. This behavior is so that the script can be used for other
+; categories and quietly fail if the event number is not found.
+ufc_category=ufc
+strict_matching=false
+
+; ==============================================================================
+;                               File Handling
+; ==============================================================================
+
+[FileHandling]
+
+; If replace_same_res is true, files that have the same event number, edition,
+; and resolution will be replaced. If false, the script will fail. If the
+; current and new paths are exactly the same, the script will fail regardless.
+replace_same_res=false
+
+; If dry_run is true, the script will not affect files, just print changes.
+dry_run=false
+
+; Valid file extensions.
+video_extensions=.mp4,.mkv,.avi,.mov
+
+; This is the name of the subfolder to create inside the 'Main Event' folder.
+; If set to None, no subfolder will be created and all editions will be placed
+; directly in the 'Main Event' folder.
+subfolder=Other
+
+; Specify the permissions for the folders and files handled by the script.
+; This will be applied to existing folders/files as well.
+; --> you can force a permission update with ufc.py --rename-all --refresh-perms
+; The script will set file permissions to at least 660, and folder permissions
+; to at least 770. If the values below are higher, those will be used instead.
+file_permissions=664
+folder_permissions=775
+
+; ==============================================================================
+;                          Formatting Configuration
+; ==============================================================================
+; Valid parts are: event_number, fighter_names, edition, resolution
+; Valid brackets are: CURLY, SQUARE, ROUND
+
+[Format.Order]
+; The order of the parts. event_number should always be first.
+; If a part is set None, it will not be used. Must be 0-n or None.
+event_number=0
+fighter_names=1
+edition=2
+resolution=3
+
+[Format.Brackets]
+; The brackets to use for each part. edition should be CURLY so plex detects it.
+edition=CURLY
+resolution=SQUARE
+
+[Format.Folder]
+; What parts to include in the folder name. Add edition to have folder for each
+; edition (so there's different entries for each edition in Plex).
+parts=event_number,fighter_names
+
+[Format.Subfolder]
+; If sub_folder is set to None, this section will be ignored.
+; This defines which parts are included in the filenames inside the subfolder.
+parts=event_number,edition
