@@ -30,16 +30,16 @@ from dataclasses import dataclass, fields
 from typing import NoReturn, ClassVar, Any, Set, Dict
 
 # Define the configuration file path. Defaults to ufc.ini in the script directory.
-# This will fallback to {filename}.template if the main file does not exist.
+# This will fallback to ufc.ini.template if the main file does not exist.
 INI_PATH = Path(__file__).parent / "ufc.ini"
 
 
 class Bracket(Enum):
     """Enum for bracket types."""
 
-    SQUARE = "square"
-    CURLY = "curly"
-    ROUND = "round"
+    SQUARE = ("[", "]")
+    CURLY = ("{", "}")
+    ROUND = ("(", ")")
 
 
 class Edition(Enum):
@@ -190,18 +190,15 @@ class Config:
 
         config = ConfigParser(allow_no_value=True)
 
-        # Try reading the config file, fallback to template if it doesn't exist
+        # Read config file or template as fallback
         if path.exists():
             config.read(path)
         else:
-            template_path = path.parent / (path.name + ".template")
-            if template_path.exists():
-                config.read(template_path)
-                print(f"Configuration file not found, using {template_path}")
-            else:
-                raise FileNotFoundError(
-                    f"Neither {path.name} nor {template_path.name} exist"
-                )
+            template = Path(__file__).parent / "ufc.ini.template"
+            if not template.exists():
+                raise FileNotFoundError("No config file or template found")
+            config.read(template)
+            print(f"Using template config: {template}")
 
         cls._validate_configuration(config)
 
@@ -231,27 +228,32 @@ class Config:
             ext.strip().lower()
             for ext in config["FileHandling"]["video_extensions"].split(",")
         )
-        perm = ""
         try:
-            perm = config["FileHandling"]["file_permissions"]
-            cls.file_permissions = int(perm, 8)
-            perm = config["FileHandling"]["folder_permissions"]
-            cls.folder_permissions = int(perm, 8)
+            cls.file_permissions = parse_permissions(
+                config["FileHandling"]["file_permissions"]
+            )
+            cls.folder_permissions = parse_permissions(
+                config["FileHandling"]["folder_permissions"]
+            )
         except ValueError as e:
-            raise ValueError(
-                f"Invalid permission value in configuration: {perm}"
-            ) from e
+            raise ValueError("Invalid permission value in configuration") from e
 
         # Load format order
-        cls.format_order = {}
-        for key in config["Format.Order"]:
-            value = config["Format.Order"][key]
-            if value.lower() in ("none", "", "null"):
-                cls.format_order[key] = None
-            elif value.isdigit():
-                cls.format_order[key] = int(value)
-            else:
-                raise ValueError(f"Invalid format order value: {value}")
+        # Filter out non-digit values and create ordered list of parts
+        ordered_parts = [
+            key
+            for key, _ in sorted(
+                (
+                    (key, value)
+                    for key, value in config["Format.Order"].items()
+                    if value.isdigit()
+                ),
+                key=lambda item: item[1],
+            )
+        ]
+        if len(ordered_parts) < 2:
+            raise ValueError("Format.Order must contain at least 2 parts")
+        cls.format_order = ordered_parts
 
         # Load format tokens
         cls.format_tokens = {}
@@ -313,29 +315,17 @@ class Config:
         if missing:
             raise ValueError("Configuration validation failed:\n" + "\n".join(missing))
 
-        # Check for invalid keys
-        order_keys = set(config["Format.Order"].keys())
-
         errors = []
-
-        # Order keys must match valid parts exactly
-        if format_parts != order_keys:
-            missing = format_parts - order_keys
-            extra = order_keys - format_parts
-            if missing:
-                errors.append(f"Missing required format order parts: {missing}")
-            if extra:
-                errors.append(f"Unknown format order parts: {extra}")
-
-        # Other keys must be valid but can be subset
+        # Format parts must match VideoInfo fields
         for name, parts in [
-            ("bracket", set(config["Format.Brackets"].keys())),
-            ("folder", set(config["Format.Folder"]["parts"].split(","))),
-            ("subfolder", set(config["Format.Subfolder"]["parts"].split(","))),
+            ("Order", set(config["Format.Order"].keys())),
+            ("Brackets", set(config["Format.Brackets"].keys())),
+            ("Folder", set(config["Format.Folder"]["parts"].split(","))),
+            ("Subfolder", set(config["Format.Subfolder"]["parts"].split(","))),
         ]:
             invalid = parts - format_parts
             if invalid:
-                errors.append(f"Invalid {name} format parts: {invalid}")
+                errors.append(f"Invalid Format.{name} parts: {invalid}")
 
         if errors:
             raise ValueError("Format parts validation failed:\n" + "\n".join(errors))
@@ -611,65 +601,49 @@ def construct_path(file_path: Path) -> tuple[Path, VideoInfo]:
     parts = [""] * len(Config.format_order)
     folder_parts = [""] * len(Config.format_order)
 
+    """
     info = VideoInfo(file_path)
-
     in_subfolder = bool(Config.subfolder and info.edition != Edition.MAIN_EVENT)
 
-    for attr in fields(VideoInfo):
-        key, value = attr.name, getattr(info, attr.name)
+    parts = []
+    folder_parts = []
 
-        if isinstance(value, Enum):
-            value = value.value
-
-        if not value or key == "path":
+    for part in Config.format_order:
+        if not (value := getattr(info, part)):
             continue
 
-        if key not in Config.format_order:
-            exit_log(f"FORMAT_ORDER does not contain {key}", exit_code=1)
-
-        index = Config.format_order[key]
-
-        if index is None:
-            continue
-
-        if index < 0 or index >= len(parts):
-            exit_log(f'Invalid index "{index}" for part: {key}', exit_code=1)
+        if isinstance(value, Edition):
+            value = value.value if in_subfolder else f"edition-{value.value}"
 
         # Add to Main folder name
-        if key in Config.format_folder:
-            folder_parts[index] = value
+        if part in Config.format_folder:
+            folder_parts.append(value)
 
-        # Limit subfolder file parts
-        if in_subfolder and key not in Config.format_subfolder:
+        # Limit subfolder filename parts
+        if in_subfolder and part not in Config.format_subfolder:
             continue
 
-        if not in_subfolder and key == "edition":
-            # Add edition- so plex detects it as a different version
-            value = "edition-" + value
+        # Add brackets if specified
+        if token := Config.format_tokens.get(part):
+            left, right = token.value
+            value = f"{left}{value}{right}"
 
-        # Add brackets
-        token = Config.format_tokens.get(key)
-        if token == Bracket.CURLY:
-            value = "{" + value + "}"
-        elif token == Bracket.SQUARE:
-            value = "[" + value + "]"
-        elif token == Bracket.ROUND:
-            value = "(" + value + ")"
-
-        # Add to file name
-        parts[index] = value
+        # Add to filename
+        parts.append(value)
 
     # e.g. UFC Fight Night 248 Yan vs Figueiredo
-    folder_name = " ".join(filter(None, folder_parts))
+    folder_name = " ".join(folder_parts)
+
+    if not is_valid_folder_name(folder_name):
+        exit_log(f"Invalid folder name: {folder_name}", exit_code=1)
 
     dest = Config.destination_folder / folder_name
-
     if in_subfolder and Config.subfolder:
-        dest = dest / Config.subfolder
+        dest /= Config.subfolder
 
     # e.g. UFC Fight Night 248 Yan vs Figueiredo {edition-Main Event} [1080p].mkv
     # or for subfolders: UFC Fight Night 248 Prelims
-    file_name = " ".join(filter(None, parts)) + file_path.suffix
+    file_name = " ".join(parts) + file_path.suffix
 
     return (dest / file_name), info
 
@@ -684,33 +658,26 @@ def is_valid_folder_name(name: str) -> bool:
     :param name: Folder name to validate.
     :return: True if valid, False otherwise.
     """
-
-    if not name or name.strip() == "":  # Empty or spaces only
+    if not name or name.strip() != name:  # Empty/whitespace or leading/trailing spaces
         return False
 
     # Check for invalid characters
-    if re.search(r"[\\\/\:\*\?\"\<\>\|]", name):
-        return False
-
-    # Check for leading/trailing spaces
-    if name != name.strip():
+    if re.search(r'[\\/:*?"<>|]', name):
         return False
 
     return True
 
 
 def not_posix() -> bool:
-    """
-    Checks if the script is not running on a POSIX system.
+    """Checks if the script is not running on a POSIX system."""
+    return os.name != "posix"
 
-    :return: True if the script is not running on a POSIX system, False otherwise.
-    :rtype: bool
-    """
 
-    if os.name != "posix":
-        return True
-
-    return False
+def parse_permissions(perm: str) -> int:
+    """Validate and parse a permission string into an integer."""
+    if not re.fullmatch(r"[0-7]{3,4}", perm):
+        raise ValueError(f"Invalid permission value: {perm}")
+    return int(perm, 8)
 
 
 def get_minimum_permissions(path: Path) -> int:
