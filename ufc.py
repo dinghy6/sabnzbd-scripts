@@ -237,7 +237,7 @@ class Config:
 
         # Handle nullable subfolder name
         subfolder = config["FileHandling"]["subfolder"]
-        subfolder = None if subfolder.lower() in ("none", "") else subfolder
+        subfolder = None if subfolder.lower() in ("none", "", "null") else subfolder
         if subfolder and not is_valid_folder_name(subfolder):
             raise ValueError(f'Invalid subfolder name: "{subfolder}"')
         cls.subfolder = subfolder
@@ -246,7 +246,7 @@ class Config:
         cls.format_order = {}
         for key in config["Format.Order"]:
             value = config["Format.Order"][key]
-            if value in ("none", ""):
+            if value.lower() in ("none", "", "null"):
                 cls.format_order[key] = None
             elif value.isdigit():
                 cls.format_order[key] = int(value)
@@ -739,7 +739,6 @@ def get_minimum_permissions(path: Path) -> int:
         min_mode = stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IWGRP
     else:
         exit_log(f"Permission check failed: {path} is not a file or directory", 1)
-
 
     return wanted | min_mode
 
