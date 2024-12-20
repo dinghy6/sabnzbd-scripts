@@ -6,6 +6,12 @@
 ; Full path to the destination folder
 destination_folder=/mnt/media/Sport/
 
+; This is the name of the subfolder to create inside the 'Main Event' folder.
+; If set to None, no subfolder will be created and all editions will be placed
+; according to the `Format.Folder` configuration.
+subfolder=Other
+
+
 [Categories]
 ; If this category matches the job category, strict_matching will be ignored
 ; and set to true. This behavior is so that the script can be used for other
@@ -19,21 +25,16 @@ strict_matching=false
 
 [FileHandling]
 
+; If dry_run is true, the script will not affect files, just print changes.
+dry_run=false
+
 ; If replace_same_res is true, files that have the same event number, edition,
 ; and resolution will be replaced. If false, the script will fail. If the
 ; current and new paths are exactly the same, the script will fail regardless.
 replace_same_res=false
 
-; If dry_run is true, the script will not affect files, just print changes.
-dry_run=false
-
 ; Valid file extensions.
 video_extensions=.mp4,.mkv,.avi,.mov
-
-; This is the name of the subfolder to create inside the 'Main Event' folder.
-; If set to None, no subfolder will be created and all editions will be placed
-; directly in the 'Main Event' folder.
-subfolder=Other
 
 ; Specify the permissions for the folders and files handled by the script.
 ; This will be applied to existing folders/files as well.

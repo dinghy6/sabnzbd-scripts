@@ -208,6 +208,13 @@ class Config:
         # Load paths
         cls.destination_folder = Path(config["Paths"]["destination_folder"])
 
+        # Handle nullable subfolder name
+        subfolder = config["Paths"]["subfolder"]
+        subfolder = None if subfolder.lower() in ("none", "", "null") else subfolder
+        if subfolder and not is_valid_folder_name(subfolder):
+            raise ValueError(f'Invalid subfolder name: "{subfolder}"')
+        cls.subfolder = subfolder
+
         # Load categories
         cls.ufc_category = config["Categories"]["ufc_category"]
         cls.strict_matching = (
@@ -234,13 +241,6 @@ class Config:
             raise ValueError(
                 f"Invalid permission value in configuration: {perm}"
             ) from e
-
-        # Handle nullable subfolder name
-        subfolder = config["FileHandling"]["subfolder"]
-        subfolder = None if subfolder.lower() in ("none", "", "null") else subfolder
-        if subfolder and not is_valid_folder_name(subfolder):
-            raise ValueError(f'Invalid subfolder name: "{subfolder}"')
-        cls.subfolder = subfolder
 
         # Load format order
         cls.format_order = {}
@@ -285,13 +285,12 @@ class Config:
 
         # Validate config sections and keys
         required = {
-            "Paths": ["destination_folder"],
+            "Paths": ["destination_folder", "subfolder"],
             "Categories": ["ufc_category", "strict_matching"],
             "FileHandling": [
-                "replace_same_res",
                 "dry_run",
+                "replace_same_res",
                 "video_extensions",
-                "subfolder",
                 "file_permissions",
                 "folder_permissions",
             ],
@@ -923,6 +922,12 @@ def rename_and_move(file_path: Path) -> tuple[str, int]:
     new_path, info = construct_path(file_path)
 
     if new_path.exists():
+        if Config.refresh_perms:
+            ref_stat = os.stat(Config.destination_folder)
+            try:
+                check_permissions(new_path, ref_stat)
+            except OSError as e:
+                print(f"Error: {e}")
         # If the new file already exists, print an error and exit
         return f"File {new_path.name} already exists in {new_path.parent}", 1
 
@@ -944,6 +949,12 @@ def rename_and_move(file_path: Path) -> tuple[str, int]:
 
     if new_res == old_res or new_res > old_res:
         if new_res == old_res and not Config.replace_same_res:
+            if Config.refresh_perms:
+                ref_stat = os.stat(Config.destination_folder)
+                try:
+                    check_permissions(x_info.path, ref_stat)
+                except OSError as e:
+                    print(f"Error: {e}")
             return (
                 f"File {x_info.path.name} already exists in "
                 f"{new_path.parent} with the same resolution.",
@@ -959,6 +970,13 @@ def rename_and_move(file_path: Path) -> tuple[str, int]:
         print(f"Replacing {x_info.path.name} with {new_path.name}")
 
         return move_file(info.path, new_path)
+
+    if Config.refresh_perms:
+        ref_stat = os.stat(Config.destination_folder)
+        try:
+            check_permissions(x_info.path, ref_stat)
+        except OSError as e:
+            print(f"Error: {e}")
 
     # If the existing file has a higher resolution, error
     return (
@@ -1027,13 +1045,6 @@ def bulk_rename(
 
         elif path.is_file() and path.suffix.lower() in Config.video_extensions:
             message, exit_code = rename_and_move(path)
-
-            if Config.refresh_perms:
-                ref_stat = os.stat(Config.destination_folder)
-                try:
-                    check_permissions(path, ref_stat)
-                except OSError as e:
-                    print(f"Error: {e}")
 
             print("DNF: " + message if exit_code else message)
 
