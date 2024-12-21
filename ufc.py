@@ -192,57 +192,73 @@ class Config:
             ValueError: If validation fails due to missing/invalid sections/keys
         """
         config = ConfigParser(allow_no_value=True)
+        cls._read_config_file(config, path)
+        cls._validate_keys(config)
+        cls._validate_format_parts(config)
+        cls._load_paths(config)
+        cls._load_categories(config)
+        cls._load_file_handling(config)
+        cls._load_format_settings(config)
 
-        # Read config file or template as fallback
+    @classmethod
+    def _read_config_file(cls, config: ConfigParser, path: Path) -> None:
+        """Read the configuration file or template."""
         if path.exists():
             config.read(path)
         else:
-            template = Path(__file__).parent / "ufc.ini.template"
-            if not template.exists():
+            if not (template := Path(__file__).parent / "ufc.ini.template").exists():
                 raise FileNotFoundError("No config file or template found")
             config.read(template)
-            print(f"Using template config: {template}")
+            print(f"Warning: INI not found. Using template config: {template}")
 
-        cls._validate_configuration(config)
-
-        # Load paths
+    @classmethod
+    def _load_paths(cls, config: ConfigParser) -> None:
+        """Load path settings from the configuration."""
         cls.destination_folder = Path(config["Paths"]["destination_folder"])
-
-        # Handle nullable subfolder name
         subfolder = config["Paths"]["subfolder"]
-        subfolder = None if subfolder.lower() in ("none", "", "null") else subfolder
-        if subfolder and not is_valid_folder_name(subfolder):
-            raise ValueError(f'Invalid subfolder name: "{subfolder}"')
+        if subfolder.lower() in ("none", "", "null"):
+            subfolder = None
+        elif not is_valid_folder_name(subfolder):
+            raise ValueError(f'Invalid folder name: "{subfolder}"')
         cls.subfolder = subfolder
 
-        # Load categories
+    @classmethod
+    def _load_categories(cls, config: ConfigParser) -> None:
+        """Load category settings from the configuration."""
         cls.ufc_category = config["Categories"]["ufc_category"]
-        cls.strict_matching = (
-            config["Categories"].getboolean("strict_matching") or cls.strict_matching
+        cls.strict_matching = config["Categories"].getboolean(
+            "strict_matching", cls.strict_matching
         )
 
-        # Load file handling
-        cls.replace_same_res = (
-            config["FileHandling"].getboolean("replace_same_res")
-            or cls.replace_same_res
+    @classmethod
+    def _load_file_handling(cls, config: ConfigParser) -> None:
+        """Load file handling settings from the configuration."""
+        cls.replace_same_res = config["FileHandling"].getboolean(
+            "replace_same_res", cls.replace_same_res
         )
-        cls.dry_run = config["FileHandling"].getboolean("dry_run") or cls.dry_run
+        cls.dry_run = config["FileHandling"].getboolean("dry_run", cls.dry_run)
         cls.video_extensions = set(
             ext.strip().lower()
             for ext in config["FileHandling"]["video_extensions"].split(",")
         )
-        try:
-            cls.file_permissions = (
-                parse_permissions(config["FileHandling"]["file_permissions"]) | 0o660
-            )
-            cls.folder_permissions = (
-                parse_permissions(config["FileHandling"]["folder_permissions"]) | 0o770
-            )
-        except ValueError as e:
-            raise ValueError("Invalid permission value in configuration") from e
+        cls.file_permissions = cls.parse_permissions(
+            config["FileHandling"]["file_permissions"]
+        )
+        cls.folder_permissions = cls.parse_permissions(
+            config["FileHandling"]["folder_permissions"]
+        )
 
-        # Load format order
-        # Filter out non-digit values and create ordered list of parts
+    @classmethod
+    def _load_format_settings(cls, config: ConfigParser) -> None:
+        """Load format settings from the configuration."""
+        cls.format_order = cls._get_ordered_parts(config)
+        cls.format_tokens = cls._get_format_tokens(config)
+        cls.format_folder = set(config["Format.Folder"]["parts"].split(","))
+        cls.format_subfolder = set(config["Format.Subfolder"]["parts"].split(","))
+
+    @classmethod
+    def _get_ordered_parts(cls, config: ConfigParser) -> list[str]:
+        """Get ordered parts from the configuration."""
         ordered_parts = [
             key
             for key, _ in sorted(
@@ -255,39 +271,23 @@ class Config:
             )
         ]
         if len(ordered_parts) < 2:
-            raise ValueError("Format.Order must contain at least 2 parts")
-        cls.format_order = ordered_parts
-
-        # Load format tokens
-        cls.format_tokens = {}
-        for key in config["Format.Brackets"]:
-            value = config["Format.Brackets"][key]
-            if hasattr(Bracket, value.upper()):
-                cls.format_tokens[key] = Bracket[value.upper()]
-            else:
-                raise ValueError(f"Invalid bracket type: {value}")
-
-        # Load format folder
-        cls.format_folder = set(config["Format.Folder"]["parts"].split(","))
-
-        # Load format subfolder
-        cls.format_subfolder = set(config["Format.Subfolder"]["parts"].split(","))
+            raise ValueError("Format.Order must contain at least 2 parts.")
+        return ordered_parts
 
     @classmethod
-    def _validate_configuration(cls, config: ConfigParser) -> None:
-        """Validate the configuration file structure and content.
+    def _get_format_tokens(cls, config: ConfigParser) -> dict[str, Bracket]:
+        """Get format tokens from the configuration."""
+        format_tokens = {}
+        for key, value in config["Format.Brackets"].items():
+            if hasattr(Bracket, value.upper()):
+                format_tokens[key] = Bracket[value.upper()]
+            else:
+                raise ValueError(f"Invalid bracket type: {value}")
+        return format_tokens
 
-        Performs deep validation of the config file by checking:
-        - All sections and keys exist
-        - Format parts match `VideoInfo` fields
-        - No unknown format parts in any format section
-
-        Args:
-            config: `ConfigParser` instance containing the loaded config
-
-        Raises:
-            ValueError: If validation fails, with details in message
-        """
+    @classmethod
+    def _validate_keys(cls, config: ConfigParser) -> None:
+        """Confirm all section and keys in INI file exist."""
         # Validate config sections and keys
         required = {
             "Paths": ["destination_folder", "subfolder"],
@@ -318,8 +318,10 @@ class Config:
         if missing:
             raise ValueError("Configuration validation failed:\n" + "\n".join(missing))
 
+    @classmethod
+    def _validate_format_parts(cls, config: ConfigParser) -> None:
+        """Validate format parts against VideoInfo fields."""
         format_parts = set(f.name for f in fields(VideoInfo)) - {"path"}
-
         # Format parts must match VideoInfo fields
         errors = []
         for name, parts in [
@@ -334,6 +336,57 @@ class Config:
 
         if errors:
             raise ValueError("Format parts validation failed:\n" + "\n".join(errors))
+
+    @classmethod
+    def parse_permissions(cls, perm: str) -> int:
+        """Validate and parse a permission string into an integer.
+
+        Converts Unix-style file permissions from either symbolic (rwxrw-r--) or
+        octal (755) format into their integer representation.
+
+        Args:
+            perm: The permission string to parse.
+
+        Returns:
+            The permissions as an integer in octal format.
+
+        Raises:
+            ValueError: If the permission string is invalid or doesn't match either format.
+        """
+        if not re.fullmatch(r"^(?:0?[0-7]{3}|(?:[r-][w-][x-]){3})$", perm):
+            raise ValueError(f"Invalid permission value: {perm}")
+
+        if perm.isdigit():
+            return int(perm, 8)
+
+        char_to_bit = {"r": 4, "w": 2, "x": 1, "-": 0}
+        result = 0
+        for i in range(0, 9, 3):
+            value = sum(char_to_bit[c] for c in perm[i : i + 3])
+            result = (result << 3) | value
+
+        return result
+
+    @classmethod
+    def get_permissions(cls, path: Path) -> int:
+        """Returns the minimum permissions required for a given path.
+
+        - Directories: minimum 770 (rwxrwx---)
+        - Files: minimum 660 (rw-rw----)
+
+        Plus any additional permissions from ini.
+
+        Args:
+            path: The path to check.
+
+        Returns:
+            The permissions in octal required for the path.
+        """
+        if path.is_dir():
+            return cls.folder_permissions | 0o770
+        if path.is_file():
+            return cls.file_permissions | 0o660
+        exit_log(f"Permission check failed: {path} is not a file or directory", 1)
 
 
 def exit_log(message: str = "", exit_code: int = 1) -> NoReturn:
@@ -612,69 +665,9 @@ def is_valid_folder_name(name: str) -> bool:
     return bool(name and name.strip() == name and not re.search(r'[\\/:*?"<>|]', name))
 
 
-def validate_folder_name(name: str) -> str | None:
-    """Validate folder name and return `None` if `name` is falsey (none, null, "")."""
-    if name.lower() in ("none", "", "null"):
-        return None
-    if not is_valid_folder_name(name):
-        raise ValueError(f'Invalid folder name: "{name}"')
-    return name
-
-
 def not_posix() -> bool:
     """Checks if the script is not running on a POSIX system."""
     return os.name != "posix"
-
-
-def parse_permissions(perm: str) -> int:
-    """Validate and parse a permission string into an integer.
-
-    Converts Unix-style file permissions from either symbolic (rwxrw-r--) or
-    octal (755) format into their integer representation.
-
-    Args:
-        perm: The permission string to parse.
-
-    Returns:
-        The permissions as an integer in octal format.
-
-    Raises:
-        ValueError: If the permission string is invalid or doesn't match either format.
-    """
-    if not re.fullmatch(r"^(?:0?[0-7]{3}|(?:[r-][w-][x-]){3})$", perm):
-        raise ValueError(f"Invalid permission value: {perm}")
-
-    if perm.isdigit():
-        return int(perm, 8)
-
-    char_to_bit = {"r": 4, "w": 2, "x": 1, "-": 0}
-    result = 0
-    for i in range(0, 9, 3):
-        value = sum(char_to_bit[c] for c in perm[i : i + 3])
-        result = (result << 3) | value
-
-    return result
-
-
-def get_permissions(path: Path) -> int:
-    """Returns the minimum permissions required for a given path.
-
-    - Directories: minimum 770 (rwxrwx---)
-    - Files: minimum 660 (rw-rw----)
-
-    Plus any additional permissions from ini.
-
-    Args:
-        path: The path to check.
-
-    Returns:
-        The permissions in octal required for the path.
-    """
-    if path.is_dir():
-        return Config.folder_permissions | 0o770
-    if path.is_file():
-        return Config.file_permissions | 0o660
-    exit_log(f"Permission check failed: {path} is not a file or directory", 1)
 
 
 def fix_permissions(
@@ -776,7 +769,7 @@ def check_permissions(path: Path, ref: os.stat_result) -> None:
         check_permissions(path.parent, ref)
 
     cur_stat = os.stat(path)
-    target = get_permissions(path)
+    target = Config.get_permissions(path)
 
     if (cur_stat.st_mode & 0o777) == target:
         return
@@ -803,7 +796,7 @@ def move_file(src: Path, dst: Path) -> tuple[str, int]:
     ref_stat = os.stat(Config.destination_folder)
 
     # Get permissions, minimum 770
-    mode = get_permissions(src.parent)
+    mode = Config.get_permissions(src.parent)
 
     if not parent.exists():
         try:
@@ -814,7 +807,7 @@ def move_file(src: Path, dst: Path) -> tuple[str, int]:
             return f"Failed to create directory {parent}: {e}", 1
 
     # Get permissions, minimum 660
-    mode = get_permissions(src)
+    mode = Config.get_permissions(src)
 
     try:
         shutil.move(src, dst)
