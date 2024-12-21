@@ -37,10 +37,10 @@ replace_same_res=false
 video_extensions=.mp4,.mkv,.avi,.mov
 
 ; Specify the permissions for the folders and files handled by the script.
-; This will be applied to existing folders/files as well.
 ; --> you can force a permission update with ufc.py --rename-all --refresh-perms
 ; The script will set file permissions to at least 660, and folder permissions
 ; to at least 770. If the values below are higher, those will be used instead.
+; Supports octal and symbolic notation (e.g. 775 or rwxrwxr-x).
 file_permissions=664
 folder_permissions=775
 
@@ -52,7 +52,7 @@ folder_permissions=775
 
 [Format.Order]
 ; The order of the parts. event_number should always be first.
-; If a part is set None, it will not be used. Must be 0-n or None.
+; If a part is not included, it will not be used. Must be 0-n or None.
 event_number=0
 fighter_names=1
 edition=2

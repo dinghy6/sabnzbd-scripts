@@ -1,33 +1,25 @@
-"""
-This script is used in SABnzbd's post-processing to move and rename UFC files.
+"""SABnzbd post-processing script to organize UFC videos by event.
 
-The script will attempt to extract the UFC event number (event name),
-fighter names (title), and edition from the filename. Plex uses editions
-to specify different versions of movies. We can use this to differentiate
-between different versions of UFC files.
+Extracts event number, fighter names, and edition (Early Prelims/Prelims/Main Event)
+from filenames. Creates folders and moves files with consistent naming for Plex.
 
-The editions used in output filenames are: Early Prelims, Prelims, and Main Event.
-
-If the extraction is successful, the script will create a new folder in
-destination_folder. It will then rename and move the file to the new folder.
-
-The formatting of the folder name and filenames is defined in the script.
-
-If the extraction is unsuccessful or any other errors occur, the script will
-print an error message and exit with a non-zero exit code.
+The script:
+- Parses UFC filenames for metadata, falls back to folder names if obfuscated
+- Creates folders and optional subfolders with consistent format (configurable)
+- Moves and renames files accordingly
+- Handles multiple editions via Plex edition tags
 """
 
 import os
 import re
 import sys
-import stat
 import shutil
 import argparse
 from enum import Enum
 from pathlib import Path
 from configparser import ConfigParser
 from dataclasses import dataclass, fields
-from typing import NoReturn, ClassVar, Any, Set, Dict
+from typing import NoReturn, ClassVar
 
 # Define the configuration file path. Defaults to ufc.ini in the script directory.
 # This will fallback to ufc.ini.template if the main file does not exist.
@@ -55,30 +47,29 @@ class VideoInfo:
     """Defines video information extracted from the file name."""
 
     event_number: str = ""
+    """The UFC event number e.g. UFC 248"""
     fighter_names: str = ""
+    """The fighter names e.g. Yan vs Figueiredo 2"""
     edition: Edition = Edition.MAIN_EVENT
+    """The UFC event edition as an Enum"""
     resolution: str = ""
+    """The video resolution e.g. 1080p"""
     path: Path = Path("")
+    """The full path to the source video file"""
 
     def __init__(self, path: Path, strict: bool = True) -> None:
-        """
-        Extracts information from a UFC video file name.
+        """Extracts and assigns information from a UFC video file name.
 
-        Cleans up the file name then calls get_ functions to extract information.
+        Args:
+            path: Path of the file to extract information from
+            strict: Whether to  attempt to find missing info in other folders
 
-        First tries to find the UFC event number. If not found and strict
-        is True, the script exits. How it exits is determined by the
-        STRICT_MATCHING variable.
+        Extracts the event number, fighter names, edition and resolution from
+        the filename. With strict=True, will try harder to find info and fail
+        on errors. If strict_matching is false, will silently exit on errors.
 
-        If fighter names are not found and strict is True, find_names()
-        is called to attempt to find them from an existing folder.
-
-        If the extraction is successful, assigns info to class attributes.
-
-        :param path: The path of the file to extract information from
-        :type path: str
-        :param strict: Whether to try hard or not
-        :type strict: bool
+        Raises:
+            SystemExit: If required info cannot be found in strict mode
         """
 
         if not path or not path.exists():
@@ -120,53 +111,64 @@ class VideoInfo:
         self.resolution = get_resolution(name)
 
 
-@dataclass(frozen=False)
+@dataclass
 class Config:
-    """
-    Configuration settings for the UFC file controller.
+    """Configuration settings for the UFC file controller.
 
-    This class uses class variables to store global configuration settings.
-    All settings are loaded from an INI file at startup.
-
-    :cvar destination_folder: Root folder for UFC videos
-    :cvar ufc_category: Category name for UFC downloads
-    :cvar strict_matching: Whether to enforce strict name matching
-    :cvar replace_same_res: Whether to replace files with same resolution
-    :cvar dry_run: Whether to simulate operations without changes
-    :cvar video_extensions: Set of valid video file extensions
-    :cvar subfolder: Name of subfolder for non-main events
-    :cvar format_order: Order and position of parts in filenames
-    :cvar format_tokens: Bracket style for each part
-    :cvar format_folder: Parts to include in folder names
-    :cvar format_subfolder: Parts to include in filenames inside subfolders
-
-    Note:
-        All settings are class variables (ClassVar) to maintain global state.
-        Settings are loaded from an INI file and validated at startup.
+    Attributes:
+        destination_folder: Root folder for UFC videos.
+        subfolder: Name of subfolder for non-main events.
+        ufc_category: Category name for UFC downloads.
+        strict_matching: Whether to enforce strict name matching.
+        replace_same_res: Whether to replace files with same resolution.
+        dry_run: Whether to simulate operations without changes.
+        video_extensions: Valid video file extensions.
+        file_permissions: Default file permissions.
+        folder_permissions: Default folder permissions.
+        format_order: Order of parts in formatted path names.
+        format_tokens: Bracket style for each part.
+        format_folder: Parts to include in folder names.
+        format_subfolder: Parts to include in filenames inside subfolders.
+        refresh_perms: Whether to check and fix permissions aggressively.
     """
 
+    # The following docstrings are for hints in IDEs, not for documentation
     destination_folder: ClassVar[Path] = Path("/mnt/media/Sport/")
-    ufc_category: ClassVar[str] = "ufc"
-    strict_matching: ClassVar[bool] = False
-    replace_same_res: ClassVar[bool] = False
-    dry_run: ClassVar[bool] = False
-    video_extensions: ClassVar[Set[str]] = {".mp4", ".mkv", ".avi", ".mov"}
+    """Root folder for UFC videos"""
     subfolder: ClassVar[str | None] = "Other"
-    file_permissions: ClassVar[int] = 0o664
+    """Name of subfolder for non-main events"""
+    ufc_category: ClassVar[str] = "ufc"
+    """Category name for UFC downloads"""
+    strict_matching: ClassVar[bool] = False
+    """Whether to enforce strict name matching"""
+    replace_same_res: ClassVar[bool] = False
+    """Whether to replace files with same resolution"""
+    dry_run: ClassVar[bool] = False
+    """Whether to simulate operations without changes"""
+    video_extensions: ClassVar[set[str]] = {".mp4", ".mkv", ".avi", ".mov"}
+    """Valid video file extensions"""
+    file_permissions: ClassVar[int] = 0o660
+    """Default file permissions"""
     folder_permissions: ClassVar[int] = 0o770
-    format_order: ClassVar[Dict[str, int | None]] = {
-        "event_number": 0,
-        "fighter_names": 1,
-        "edition": 2,
-        "resolution": 3,
-    }
-    format_tokens: ClassVar[Dict[str, "Bracket"]] = {
+    """Default folder permissions"""
+    format_order: ClassVar[list[str]] = [
+        "event_number",
+        "fighter_names",
+        "edition",
+        "resolution",
+    ]
+    """Order of parts in fomatted path names"""
+    format_tokens: ClassVar[dict[str, "Bracket"]] = {
         "edition": Bracket.CURLY,
         "resolution": Bracket.SQUARE,
     }
-    format_folder: ClassVar[Set[str]] = {"event_number", "fighter_names"}
-    format_subfolder: ClassVar[Set[str]] = {"event_number", "edition"}
+    """Bracket style for each part"""
+    format_folder: ClassVar[set[str]] = {"event_number", "fighter_names"}
+    """Parts to include in folder names"""
+    format_subfolder: ClassVar[set[str]] = {"event_number", "edition"}
+    """Parts to include in filenames inside subfolders"""
     refresh_perms: ClassVar[bool] = False
+    """Whether to check and fix permissions aggressively"""
 
     @classmethod
     def update(cls, **kwargs) -> None:
@@ -177,17 +179,18 @@ class Config:
 
     @classmethod
     def load_from_ini(cls, path: Path) -> None:
+        """Load configuration settings from an INI file.
+
+        Reads the INI file and updates class config variables. Validates all sections
+        and keys before applying changes.
+
+        Args:
+            path (Path): Path to the INI configuration file
+
+        Raises:
+            FileNotFoundError: If both the config file and template are missing
+            ValueError: If validation fails due to missing/invalid sections/keys
         """
-        Load configuration settings from an INI file.
-
-        Reads the INI file at the given path and updates the class configuration variables.
-        Validates the configuration sections and keys before applying any changes.
-
-        :param path: Path to the INI configuration file
-        :type path: Path
-        :raises ValueError: If validation fails due to missing/invalid sections/keys
-        """
-
         config = ConfigParser(allow_no_value=True)
 
         # Read config file or template as fallback
@@ -229,11 +232,11 @@ class Config:
             for ext in config["FileHandling"]["video_extensions"].split(",")
         )
         try:
-            cls.file_permissions = parse_permissions(
-                config["FileHandling"]["file_permissions"]
+            cls.file_permissions = (
+                parse_permissions(config["FileHandling"]["file_permissions"]) | 0o660
             )
-            cls.folder_permissions = parse_permissions(
-                config["FileHandling"]["folder_permissions"]
+            cls.folder_permissions = (
+                parse_permissions(config["FileHandling"]["folder_permissions"]) | 0o770
             )
         except ValueError as e:
             raise ValueError("Invalid permission value in configuration") from e
@@ -272,19 +275,19 @@ class Config:
 
     @classmethod
     def _validate_configuration(cls, config: ConfigParser) -> None:
+        """Validate the configuration file structure and content.
+
+        Performs deep validation of the config file by checking:
+        - All sections and keys exist
+        - Format parts match `VideoInfo` fields
+        - No unknown format parts in any format section
+
+        Args:
+            config: `ConfigParser` instance containing the loaded config
+
+        Raises:
+            ValueError: If validation fails, with details in message
         """
-        Validate the configuration.
-
-        Checks if all required sections and keys are present in the config file,
-        and validates that all format parts used in various sections are valid VideoInfo fields.
-
-        :param config: ConfigParser object containing the configuration
-        :type config: configparser.ConfigParser
-        :raises ValueError: If validation fails, with details in the error message
-        """
-
-        format_parts = set(f.name for f in fields(VideoInfo)) - {"path"}
-
         # Validate config sections and keys
         required = {
             "Paths": ["destination_folder", "subfolder"],
@@ -315,8 +318,10 @@ class Config:
         if missing:
             raise ValueError("Configuration validation failed:\n" + "\n".join(missing))
 
-        errors = []
+        format_parts = set(f.name for f in fields(VideoInfo)) - {"path"}
+
         # Format parts must match VideoInfo fields
+        errors = []
         for name, parts in [
             ("Order", set(config["Format.Order"].keys())),
             ("Brackets", set(config["Format.Brackets"].keys())),
@@ -332,100 +337,91 @@ class Config:
 
 
 def exit_log(message: str = "", exit_code: int = 1) -> NoReturn:
+    """Logs a message and exits the program with the specified exit code.
+
+    Args:
+        message: The message to be logged before exiting.
+        exit_code: The exit code to be used when terminating the program.
+
+    Returns:
+        NoReturn
+
+    Raises:
+        SystemExit: Exits the program with the specified exit code.
     """
-    Logs a message and exits the program with the specified exit code.
-
-    Prints the provided message then terminates the program using sys.exit with the given exit code.
-
-    :param message: The message to be logged before exiting.
-    :type message: str
-    :param exit_code: The exit code to be used when terminating the program.
-    :type exit_code: int
-    :return: NoReturn
-    :raises SystemExit: Exits the program with the specified exit code.
-    """
-
     print(f"Error: {message}" if exit_code else message)
     sys.exit(exit_code)
 
 
-def check_path(path: Any, error: bool = True) -> Path | None:
+def check_path(path: object, error: bool = True) -> Path | None:
+    """Checks if the given path exists and is a directory.
+
+    Args:
+        path: The path to check. Must be a string or Path object.
+        error: If True, raises an error if `path` is not a directory.
+
+    Returns:
+        The Path object of the given directory if it is an existing directory,
+        otherwise None.
+
+    Raises:
+        TypeError: If `path` is not a string or Path object.
+        NotADirectoryError: If `path` is not an existing directory.
     """
-    Checks if the given path exists and is a directory.
-
-    If the path exists and is a directory, returns the Path object.
-    If the path does not exist or is not a directory, raises a NotADirectoryError.
-
-    :param path: The path to check.
-    :type path: any
-    :param error: Whether to raise an error if the path does not exist or is not a directory.
-    :type error: bool
-    :return: The Path object of the given directory.
-    :rtype: Path
-    :raises NotADirectoryError: If the path does not exist or is not a directory.
-    """
-
-    try:
-        if not isinstance(path, (str, Path)):
-            raise TypeError("Path must be a string or Path object")
-        directory = Path(path)
-        if not (directory.exists() and directory.is_dir()):
-            raise NotADirectoryError(
-                f"Directory path '{
-                    directory}' does not exist or is not a directory"
-            )
-    except (TypeError, ValueError, NotADirectoryError) as e:
+    if not isinstance(path, (str, Path)):
         if error:
-            raise NotADirectoryError(str(e)) from e
+            raise TypeError("Path must be a string or Path object")
+        return None
+
+    if not (directory := Path(path)).is_dir():
+        if error:
+            raise NotADirectoryError(
+                f"Directory path '{directory}' does not exist or is not a directory"
+            )
         return None
 
     return directory
 
 
 def get_event_number(file_name: str) -> str:
+    """Extracts the event number from a video file name.
+
+    Args:
+        file_name: The file name.
+
+    Returns:
+        The extracted event number including the event type (UFC, Fight Night, etc.),
+        or `""` if no event number is found.
     """
-    Extracts the event number from a video file name.
-
-    Returns a string of the event number or if no event number is found, returns "".
-
-    :param file_name: The file name
-    :type file_name: str
-    :return: The extracted event number or empty string if no event number is found.
-    :rtype: str
-    """
-
     # there are also 'UFC Live' events which will not be caught, but they usually
-    # don't have a number anyway
+    # don't have a number anyway.
+    event_fmt = {
+        "ppv": lambda m: f"UFC {m}",
+        "fnight": lambda m: f"UFC Fight Night {m}",
+        "ufc_on": lambda m: f"UFC on {m.upper()}",
+    }
+
     pattern = (
         r"ufc ?(?P<ppv>\d+)"
         r"|ufc ?fight ?night (?P<fnight>\d+)"
         r"|ufc ?on ?(?P<ufc_on>\w+ \d+)"
     )
-    match = re.search(pattern, file_name, re.IGNORECASE)
 
-    if not match:
-        return ""
-    if match.group("ppv"):
-        return "UFC " + match.group("ppv")
-    if match.group("fnight"):
-        return "UFC Fight Night " + match.group("fnight")
-    if match.group("ufc_on"):
-        return "UFC on " + match.group("ufc_on").upper()
+    if match := re.search(pattern, file_name, re.IGNORECASE):
+        group = match.lastgroup
+        return event_fmt[group](match.group(group)) if group else ""
     return ""
 
 
 def get_fighter_names(file_name: str) -> str:
+    """Extracts the fighter names from a video file name.
+
+    Args:
+        file_name: The file name.
+
+    Returns:
+        The extracted names or `""` if no names are found.
     """
-    Extracts the fighter names from a video file name.
-
-    Returns a string of the fighter names found or if no names are found, returns "".
-
-    :param file_name: The file name
-    :type file_name: str
-    :return: The extracted names or empty string if no names are found.
-    :rtype: str
-    """
-
     # This is a delicate baby
     pattern = (
         r"(?:(?<= )|(?<=^))"  # lookbehind for start of string or space
@@ -436,147 +432,115 @@ def get_fighter_names(file_name: str) -> str:
         r"(?:(?![0-9]{2,})(?P<num>[0-9]))?"  # optional rematch number
     )
 
-    match = re.search(pattern, file_name, re.IGNORECASE)
-
-    if not match:
-        return ""
-
-    return (
-        match.group("name1").strip().title()
-        + " vs "
-        + match.group("name2").strip().title()
-        + (f" {match.group('num')}" if match.group("num") else "")
-    )
+    if match := re.search(pattern, file_name, re.IGNORECASE):
+        name1 = match.group("name1").strip().title()
+        name2 = match.group("name2").strip().title()
+        num = match.group("num")
+        return f"{name1} vs {name2}{f' {num}' if num else ''}"
+    return ""
 
 
 def get_edition(file_name: str) -> Edition:
+    """Extracts the edition from a video file name.
+
+    Args:
+        file_name: The file name.
+
+    Returns:
+        The extracted edition as enum or `Edition.MAIN_EVENT` if none is found.
     """
-    Extracts the edition from a video file name.
-
-    Returns a string of the edition. Defaults to "Main Event".
-
-    :param file_name: The file name
-    :type file_name: str
-    :return: The extracted edition
-    :rtype: str
-    """
-
     pattern = r"early prelims|prelims|preliminary"
     match = re.search(pattern, file_name, re.IGNORECASE)
 
-    edition = match.group(0).lower() if match else "main event"
-
-    # Map string to enum
+    # Map match to enum
     return {
         "early prelims": Edition.EARLY_PRELIMS,
         "prelims": Edition.PRELIMS,
         "preliminary": Edition.PRELIMS,
-        "main event": Edition.MAIN_EVENT,
-    }.get(edition, Edition.MAIN_EVENT)
+    }.get(match.group(0).lower() if match else "", Edition.MAIN_EVENT)
 
 
 def get_resolution(file_name: str) -> str:
-    """
-    Extracts the resolution from a video file name. Not trying to be perfect here.
+    """Extracts the resolution from a video file name.
 
     Returns a string of the resolution and scan mode or if no resolution is
-    found, returns "". 4K and UHD are treated as 2160p
+    found, returns "". 4K and UHD are treated as 2160p.
 
-    :param file_name: The file name
-    :type file_name: str
-    :return: The extracted resolution or "" if no resolution is found.
-    :rtype: str
+    Args:
+        file_name: The file name.
+
+    Returns:
+        The extracted resolution as string or "" if no resolution is found.
     """
-
     file_name = re.sub(r"4k|uhd", "2160p", file_name, flags=re.IGNORECASE)
-    match = re.search(r"\d{3,4}[pi]", file_name, re.IGNORECASE)
-
-    return "" if not match else match.group(0)
+    if match := re.search(r"\d{3,4}[pi]", file_name, re.IGNORECASE):
+        return match.group(0).lower()
+    return ""
 
 
 def find_editions(path: Path, event_number: str) -> dict[Edition, VideoInfo]:
+    """Scans the given directory and returns an `Edition`: `VideoInfo` map.
+
+    Args:
+        path: The directory path to scan for files.
+        event_number: The event number to filter by.
+
+    Returns:
+        A dictionary mapping editions to `VideoInfo` objects.
     """
-    Scans the given directory and extracts editions from the file names.
-
-    Iterates over each file that starts with the supplied event_number in the
-    specified directory, extracts information from the file name, and returns a
-    dictionary mapping each edition to a VideoInfo object. If a file does not
-    start with the event number or does not contain an edition, it is not
-    included in the result.
-
-    :param path: The directory path to scan for files.
-    :type path: Path
-    :param event_number: The event_number to filter by
-    :type event_number: str
-    :return: A dictionary mapping editions to VideoInfo objects.
-    :rtype: dict[str, VideoInfo]
-    """
-
-    editions_in_folder: dict[Edition, VideoInfo] = {}
-    for file in path.glob(f"*{event_number}*", case_sensitive=False):
-        if file.is_file():
-            info = VideoInfo(file, strict=False)
-            if info.event_number == event_number:
-                editions_in_folder[info.edition] = info
-
-    return editions_in_folder
+    return {
+        info.edition: info
+        for file in path.glob(f"*{event_number}*", case_sensitive=False)
+        if file.is_file()
+        and (info := VideoInfo(file, strict=False)).event_number == event_number
+    }
 
 
 def find_largest_video_file(video_path: Path) -> Path | None:
+    """Finds the largest video file in the given path.
+
+    Valid video file extensions returned are defined in `Config.video_extensions`.
+    If no video files are found, returns `None`.
+
+    Args:
+        video_path: The path to search for video files.
+
+    Returns:
+        Path of the largest video file or `None` if no video files are found.
     """
-    Finds the largest video file in the given path.
-
-    Valid video file extensions are defined in VIDEO_EXTENSIONS.
-    If video files are found, it returns the largest one based on file size,
-    because sometimes a sample video or thumbnail is included.
-    If no video files are found, returns None.
-
-    :param video_path: The path to search for video files.
-    :type video_path: Path
-    :return: Path of the largest video file or None if no video files are found.
-    :rtype: Path | None
-    """
-
-    if not video_path.is_dir():
+    try:
+        return max(
+            (
+                f
+                for f in video_path.iterdir()
+                if f.is_file() and f.suffix.lower() in Config.video_extensions
+            ),
+            key=lambda f: f.stat().st_size,
+            default=None,
+        )
+    except (NotADirectoryError, FileNotFoundError):
         return None
-
-    video_files = [
-        f
-        for f in video_path.iterdir()
-        if f.is_file() and f.suffix.lower() in Config.video_extensions
-    ]
-
-    if not video_files:
-        return None
-
-    return max(video_files, key=lambda f: f.stat().st_size)
 
 
 def find_names(
     directory: Path = Config.destination_folder, event_number: str = ""
 ) -> str:
+    """Attempts to find fighter names of a given UFC event from existing folders.
+
+    Recursively searches the directory for matches of `event_number`. This also
+    enables a bulk rename to fix folders with missing fighter names.
+
+    Args:
+        directory: The directory to search.
+        event_number: The UFC event number.
+
+    Returns:
+        The fighter names.
     """
-    Attempts to find fighter names of a given ufc event from an existing folder.
-
-    Searches for a folder in DESTINATION_FOLDER that starts with the event number.
-    If a folder is found, it will attempt to extract the fighter names from the
-    folder name. Also recursively checks inside the folder.
-
-    This also enables a bulk rename to fix folders with missing fighter names.
-
-    :param directory: The directory to search.
-    :type directory: Path
-    :param event_number: The UFC event number.
-    :type event_number: str
-    :return: The fighter names.
-    :rtype: str
-    """
-
     for path in directory.glob(f"*{event_number}*", case_sensitive=False):
         info = VideoInfo(path, strict=False)
 
         if path.is_dir() and not info.fighter_names:
-            # If the folder doesn't have fighter names, check inside
             info.fighter_names = find_names(path, event_number)
 
         if info.fighter_names:
@@ -586,21 +550,16 @@ def find_names(
 
 
 def construct_path(file_path: Path) -> tuple[Path, VideoInfo]:
-    """
-    Constructs a new file path for a UFC video file based on extracted information.
+    """Constructs a new file path for a UFC video file based on extracted information.
 
-    The formatting is defined in the FORMAT_X variables.
-    The fighter names and resolution may be ommitted if not found in the file name.
+    The formatting is defined in the Format.X variables.
 
-    :param file_path: The full path to the original video file.
-    :type file_path: Path
-    :return: A tuple containing the new file path and a dictionary of extracted information.
-    :rtype: tuple[Path, VideoInfo]
-    """
+    Args:
+        file_path: The full path to the original video file.
 
-    parts = [""] * len(Config.format_order)
-    folder_parts = [""] * len(Config.format_order)
-
+    Returns:
+        A tuple containing the new constructed file path and a `VideoInfo` instance
+        containing extracted metadata from the filename.
     """
     info = VideoInfo(file_path)
     in_subfolder = bool(Config.subfolder and info.edition != Edition.MAIN_EVENT)
@@ -615,7 +574,7 @@ def construct_path(file_path: Path) -> tuple[Path, VideoInfo]:
         if isinstance(value, Edition):
             value = value.value if in_subfolder else f"edition-{value.value}"
 
-        # Add to Main folder name
+        # Add to folder name
         if part in Config.format_folder:
             folder_parts.append(value)
 
@@ -642,30 +601,24 @@ def construct_path(file_path: Path) -> tuple[Path, VideoInfo]:
         dest /= Config.subfolder
 
     # e.g. UFC Fight Night 248 Yan vs Figueiredo {edition-Main Event} [1080p].mkv
-    # or for subfolders: UFC Fight Night 248 Prelims
+    # or for subfolders: UFC Fight Night 248 {Prelims}.mkv
     file_name = " ".join(parts) + file_path.suffix
 
     return (dest / file_name), info
 
 
 def is_valid_folder_name(name: str) -> bool:
-    """
-    Light validation for folder names:
-    - No invalid characters: \\ / : * ? " < > |
-    - Cannot be empty or just spaces
-    - Cannot start or end with spaces
+    """Validates folder name. Returns `True` if valid, `False` otherwise."""
+    return bool(name and name.strip() == name and not re.search(r'[\\/:*?"<>|]', name))
 
-    :param name: Folder name to validate.
-    :return: True if valid, False otherwise.
-    """
-    if not name or name.strip() != name:  # Empty/whitespace or leading/trailing spaces
-        return False
 
-    # Check for invalid characters
-    if re.search(r'[\\/:*?"<>|]', name):
-        return False
-
-    return True
+def validate_folder_name(name: str) -> str | None:
+    """Validate folder name and return `None` if `name` is falsey (none, null, "")."""
+    if name.lower() in ("none", "", "null"):
+        return None
+    if not is_valid_folder_name(name):
+        raise ValueError(f'Invalid folder name: "{name}"')
+    return name
 
 
 def not_posix() -> bool:
@@ -674,63 +627,73 @@ def not_posix() -> bool:
 
 
 def parse_permissions(perm: str) -> int:
-    """Validate and parse a permission string into an integer."""
-    if not re.fullmatch(r"[0-7]{3,4}", perm):
+    """Validate and parse a permission string into an integer.
+
+    Converts Unix-style file permissions from either symbolic (rwxrw-r--) or
+    octal (755) format into their integer representation.
+
+    Args:
+        perm: The permission string to parse.
+
+    Returns:
+        The permissions as an integer in octal format.
+
+    Raises:
+        ValueError: If the permission string is invalid or doesn't match either format.
+    """
+    if not re.fullmatch(r"^(?:0?[0-7]{3}|(?:[r-][w-][x-]){3})$", perm):
         raise ValueError(f"Invalid permission value: {perm}")
-    return int(perm, 8)
+
+    if perm.isdigit():
+        return int(perm, 8)
+
+    char_to_bit = {"r": 4, "w": 2, "x": 1, "-": 0}
+    result = 0
+    for i in range(0, 9, 3):
+        value = sum(char_to_bit[c] for c in perm[i : i + 3])
+        result = (result << 3) | value
+
+    return result
 
 
-def get_minimum_permissions(path: Path) -> int:
+def get_permissions(path: Path) -> int:
+    """Returns the minimum permissions required for a given path.
+
+    - Directories: minimum 770 (rwxrwx---)
+    - Files: minimum 660 (rw-rw----)
+
+    Plus any additional permissions from ini.
+
+    Args:
+        path: The path to check.
+
+    Returns:
+        The permissions in octal required for the path.
     """
-    Returns the minimum permissions required for a given path.
-
-    If the path is a directory, the minimum permissions are 770.
-    If the path is a file, the minimum permissions are 660.
-
-    If the preferred permissions are higher than the minimum, that is used instead.
-
-    :param path: The path to get minimum permissions for.
-    :type path: Path
-    :return: The minimum permissions required for the path.
-    :rtype: int
-    """
-
     if path.is_dir():
-        # At least 770
-        wanted = Config.folder_permissions & 0o777
-        min_mode = stat.S_IRWXU | stat.S_IRWXG
-    elif path.is_file():
-        # At least 660
-        wanted = Config.file_permissions & 0o777
-        min_mode = stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IWGRP
-    else:
-        exit_log(f"Permission check failed: {path} is not a file or directory", 1)
-
-    return wanted | min_mode
+        return Config.folder_permissions | 0o770
+    if path.is_file():
+        return Config.file_permissions | 0o660
+    exit_log(f"Permission check failed: {path} is not a file or directory", 1)
 
 
 def fix_permissions(
     path: Path, cur_stat: os.stat_result, ref_stat: os.stat_result, target: int
 ) -> None:
-    """
-    Ensures this script and the ref user can rwx to the given path.
+    """Ensures this script and the ref user can rwx to the given path.
 
     Fixes the permissions of a given path by setting the permissions to at least
     770. If the script is running as root, the owner will be changed to the
     owner of the reference path.
 
-    If the permissions or owner cannot be changed, raises a PermissionError with
-    a message suggesting how to fix the permissions manually.
+    Args:
+        path: The path to fix permissions for.
+        cur_stat: The current stat result of the path.
+        ref_stat: The reference stat result.
+        target: The target permissions to set.
 
-    :param path: The path to fix permissions for.
-    :type path: Path
-    :param cur_stat: The current stat result of the path.
-    :type cur_stat: os.stat_result
-    :param ref_stat: The reference stat result.
-    :type ref_stat: os.stat_result
-    :param target: The target permissions to set.
-    :type target: int
-    :raises PermissionError: If the permissions or owner cannot be changed.
+    Raises:
+        PermissionError: If the permissions or owner cannot be changed.
     """
 
     if not_posix():
@@ -782,21 +745,18 @@ def fix_permissions(
 
 
 def check_permissions(path: Path, ref: os.stat_result) -> None:
-    """
-    Apply desired permissions to the given path and its parent directories.
+    """Apply permissions to a given path and its parent directories.
 
-    Only works on POSIX systems. Recursively checks the given path and its
-    parents starting from destination_folder. If the permissions or owner
-    are incorrect, they are changed to the desired values.
+    Only works on POSIX systems. Recursively checks the path and its parents
+    starting from destination_folder. Fixes incorrect permissions and ownership
+    to match target values.
 
-    Minimum permissions are 770 for folders and 660 for files. The owner is
-    changed to the owner in the reference stat result.
+    Args:
+        path: The file or folder to check.
+        ref: Reference stat object to compare against.
 
-    :param path: The file or folder to start from.
-    :type path: Path
-    :param ref: The reference stat object.
-    :type ref: os.stat_result
-    :raises OSError: If the permissions or owner must be changed but cannot be changed.
+    Raises:
+        OSError: If permissions or ownership cannot be fixed.
     """
 
     if not_posix():
@@ -816,7 +776,7 @@ def check_permissions(path: Path, ref: os.stat_result) -> None:
         check_permissions(path.parent, ref)
 
     cur_stat = os.stat(path)
-    target = get_minimum_permissions(path)
+    target = get_permissions(path)
 
     if (cur_stat.st_mode & 0o777) == target:
         return
@@ -825,15 +785,14 @@ def check_permissions(path: Path, ref: os.stat_result) -> None:
 
 
 def move_file(src: Path, dst: Path) -> tuple[str, int]:
-    """
-    Moves a file from its original location to a new location.
+    """Moves a file from its original location to a new location.
 
-    :param src: The full path to the original video file.
-    :type src: Path
-    :param dst: The full path to the new video file.
-    :type dst: Path
-    :return: A tuple containing a boolean indicating success and an error message.
-    :rtype: tuple[str, int]
+    Args:
+        src: The full path to the original video file.
+        dst: The full path to the new video file.
+
+    Returns:
+        A tuple containing the status message and exit code (0 for success, 1 for error).
     """
 
     if Config.dry_run:
@@ -844,18 +803,18 @@ def move_file(src: Path, dst: Path) -> tuple[str, int]:
     ref_stat = os.stat(Config.destination_folder)
 
     # Get permissions, minimum 770
-    mode = get_minimum_permissions(src.parent)
+    mode = get_permissions(src.parent)
 
     if not parent.exists():
         try:
-            parent.mkdir(mode=0o770, parents=True, exist_ok=True)
+            parent.mkdir(parents=True, exist_ok=True)
             print(f"Setting permissions of {parent} to {oct(mode)}")
             os.chmod(parent, mode)
         except OSError as e:
             return f"Failed to create directory {parent}: {e}", 1
 
     # Get permissions, minimum 660
-    mode = get_minimum_permissions(src)
+    mode = get_permissions(src)
 
     try:
         shutil.move(src, dst)
@@ -873,16 +832,13 @@ def move_file(src: Path, dst: Path) -> tuple[str, int]:
 
 
 def rename_and_move(file_path: Path) -> tuple[str, int]:
-    """
-    Renames and moves a UFC video file to a new directory based on extracted information.
+    """Renames and moves a UFC video file to a new directory based on extracted information.
 
-    Moves the file to the new location under the DESTINATION_FOLDER directory. If the
-    extraction is unsuccessful, an error message is printed and the script exits.
+    Args:
+        file_path: The full path to the downloaded video file.
 
-    :param file_path: The full path to the downloaded video file.
-    :type file_path: Path
-    :return: A tuple containing a boolean indicating success and an error message.
-    :rtype: tuple[str, int]
+    Returns:
+        A tuple containing a message indicating the result and an exit code.
     """
 
     # VideoInfo obj includes file_path, not new_path
@@ -911,6 +867,7 @@ def rename_and_move(file_path: Path) -> tuple[str, int]:
         return move_file(info.path, new_path)
 
     # if there is no resolution in either, the new file is preferred
+
     new_res = int(info.resolution[:-1] or 99999)
     old_res = int(x_info.resolution[:-1] or 0)
 
@@ -958,26 +915,25 @@ def bulk_rename(
     remove_empty: bool = False,
     in_ufc_folder: bool = False,
 ) -> int:
-    """
-    Recursively renames and moves files in the directory.
+    """Recursively renames and moves files in the directory.
 
-    Param in_ufc_folder is used to skip the event number check for recursive
-    calls. Can be set to True to avoid the check.
+    Renames video files according to configured format and moves them to appropriate
+    locations. Can optionally remove empty directories after processing.
 
-    If remove_empty is True, empty folders will be removed after renaming.
-    This is useful for re-organization of existing files and should be run
-    after changing the formatting configuration.
+    Args:
+        directory: The directory to process. Defaults to Config.destination_folder.
+        remove_empty: If True, removes empty folders after processing. Defaults to False.
+        in_ufc_folder: Indicates if directory is already a UFC folder,
+            skipping event number check. Defaults to False.
 
-    NOTE: This function is recursive and can be destructive.
+    Returns:
+        0 if successful, positive integer indicating number of errors otherwise.
 
-    :param directory: The directory to rename files in.
-    :type directory: Path
-    :param remove_empty: Whether to remove empty folders after renaming.
-    :type remove_empty: bool
-    :param in_ufc_folder: If directory is a UFC folder.
-    :type in_ufc_folder: bool
-    :return: 0 if successful, 1 or more if an error occurs or a file wasn't moved.
-    :rtype: int
+    Note:
+        - Function operates recursively on all subdirectories.
+        - Only processes files with extensions defined in `Config.video_extensions`.
+        - Skips hidden files (starting with '.').
+        - Can be destructive when `remove_empty=True`.
     """
 
     res = 0
@@ -1022,15 +978,15 @@ def bulk_rename(
     return res
 
 
-def parse_args():
-    """
-    Parses command line arguments. Only called if sys.argv[1] is not a directory.
+def parse_args() -> object:
+    """Parses command line arguments.
 
-    Mostly made this for re-organization of existing files. Can use arguments
-    to run manually. Quick run: python ufc.py -d /path/to/downloaded/folder
+    Returns:
+        The directory path to process if provided, otherwise None.
 
-    :return: The folder containing the video files.
-    :rtype: any
+    Examples:
+    - `python ufc.py -d /path/to/directory` # Rename and move file in the directory
+    - `python ufc.py --rename-all --remove-empty` # Bulk rename all files in the directory
     """
 
     parser = argparse.ArgumentParser()
@@ -1113,19 +1069,21 @@ def parse_args():
 
 
 def main() -> None:
-    """
-    Main function.
+    """Main function for processing and organizing UFC video files.
 
-    If it is called by SABnzbd, the environment variables 'SAB_COMPLETE_DIR'
-    and 'SAB_CAT' will be set.
+    Handles both manual invocation and SABnzbd post-processing modes. When called by
+    SABnzbd, uses environment variables `SAB_COMPLETE_DIR` and `SAB_CAT` to locate files.
 
-    The script will filter the files in the directory to find the largest video file,
-    and then attempt to rename and move it to the specified destination folder.
+    Flow:
+    1. Finds the largest video file in the specified directory.
+    2. Extracts metadata from the filename.
+    3. Moves the file to a consistently named destination folder.
 
-    If the video file is successfully moved, the script will exit with 0.
-    If there is an error, the script will exit with 1.
+    Returns:
+        None
 
-    :return: None
+    Raises:
+        SystemExit: With code 0 on success, 1 on error
     """
 
     if len(sys.argv) == 1:
