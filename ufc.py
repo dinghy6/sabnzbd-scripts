@@ -66,21 +66,20 @@ class UFCAttr(Enum):
 class UFCRegex(Enum):
     """Enum for regex patterns used to extract UFC event attributes."""
 
-    EVENT_NUMBER = (
+    EVENT_NUMBER = re.compile(
         r"ufc ?(?P<ppv>\d+)"
         r"|ufc ?fight ?night (?P<fnight>\d+)"
-        r"|ufc ?on ?(?P<ufc_on>\w+ \d+)"
+        r"|ufc ?on ?(?P<ufc_on>\w+ \d+)",
+        re.I,
     )
-    FIGHTER_NAMES = (
+    FIGHTER_NAMES = re.compile(
         r"(?:(?<= )|(?<=^))[{[(]?"
         r"(?P<name1>(?:(?!ppv|main|event|prelim|preliminary)[a-z-]+ )+)"
         r"vs(?P<name2>(?:(?: )?(?!ppv|main|prelim|early|web)[a-z-]+)+)"
-        r"(?: ?(?![0-9]{2,})(?P<num>[0-9]))?[}\])]?"
+        r"(?: ?(?![0-9]{2,})(?P<num>[0-9]))?[}\])]?",
+        re.I,
     )
-    EDITION = r"early prelims|prelims|preliminary"
-
-    def __str__(self) -> str:
-        return self.value
+    EDITION = re.compile(r"early prelims|prelims|preliminary", re.I)
 
 
 @dataclass
@@ -197,7 +196,7 @@ class Config:
         """Load file handling settings from the configuration."""
         section = config["FileHandling"]
         cls.replace_same_res = section.getboolean("replace_same_res")
-        cls.dry_run = section.getboolean("dry_run", cls.dry_run)
+        cls.dry_run = section.getboolean("dry_run")
         cls.video_extensions = set(
             ext.strip().lower() for ext in section["video_extensions"].split(",")
         )
@@ -423,15 +422,13 @@ class VideoInfo:
             The extracted event number including the event type (UFC, Fight Night, etc.),
             or `""` if no event number is found.
         """
-        # there are also 'UFC Live' events which will not be caught, but they usually
-        # don't have a number anyway.
         event_fmt = {
             "ppv": lambda m: f"UFC {m}",
             "fnight": lambda m: f"UFC Fight Night {m}",
             "ufc_on": lambda m: f"UFC on {m.upper()}",
         }
 
-        if match := re.search(UFCRegex.EVENT_NUMBER.value, name, re.I):
+        if match := re.search(UFCRegex.EVENT_NUMBER.value, name):
             group = match.lastgroup
             return event_fmt[group](match.group(group)) if group else ""
         return ""
@@ -442,9 +439,7 @@ class VideoInfo:
         Args:
             name: The string to search in.
         """
-        if match := re.search(
-            UFCRegex.FIGHTER_NAMES.value, name or self.path.name, re.I
-        ):
+        if match := re.search(UFCRegex.FIGHTER_NAMES.value, name or self.path.name):
             name1 = match.group("name1").strip().title()
             name2 = match.group("name2").strip().title()
             num = match.group("num")
@@ -474,7 +469,7 @@ class VideoInfo:
         Assigns a value from the Edition enum based on extracted edition type.
         If no edition is detected in the filename, assigns Edition.MAIN_EVENT as default.
         """
-        match = re.search(UFCRegex.EDITION.value, self._name, re.I)
+        match = re.search(UFCRegex.EDITION.value, self._name)
 
         # Map match to enum
         edition = {
@@ -522,8 +517,8 @@ class VideoInfo:
                 continue
 
             # Add brackets if specified
-            if token := Config.format_tokens.get(part):
-                value = token.surround(value)
+            if bracket := Config.format_tokens.get(part):
+                value = bracket.surround(value)
 
             # Add to filename
             parts.append(value)
@@ -562,33 +557,18 @@ def exit_log(message: str = "", exit_code: int = 1) -> NoReturn:
     sys.exit(exit_code)
 
 
-def check_path(path: object, error: bool = True) -> Path | None:
+def check_path(path: object) -> Path | None:
     """Checks if the given path exists and is a directory.
 
     Args:
         path: The path to check. Must be a string or Path object.
-        error: If True, raises an error if `path` is not a directory.
 
     Returns:
         The Path object of the given directory if it is an existing directory,
         otherwise None.
-
-    Raises:
-        TypeError: If `path` is not a string or Path object.
-        NotADirectoryError: If `path` is not an existing directory.
     """
-    if not isinstance(path, (str, Path)):
-        if error:
-            raise TypeError("Path must be a string or Path object")
+    if not isinstance(path, (str, Path)) or (directory := Path(path)).is_dir():
         return None
-
-    if not (directory := Path(path)).is_dir():
-        if error:
-            raise NotADirectoryError(
-                f"Directory path '{directory}' does not exist or is not a directory"
-            )
-        return None
-
     return directory
 
 
@@ -646,25 +626,46 @@ def find_largest_video_file(video_path: Path) -> Path | None:
         return None
 
 
-def fix_permissions(
-    path: Path, cur_stat: os.stat_result, ref_stat: os.stat_result, target: int
-) -> None:
-    """Ensures this script and the ref user can rwx to the given path.
+def chmod(path: Path, target: int) -> None:
+    """Change the permissions of the given path."""
+    try:
+        os.chmod(path, target)
+        print(f"Set permissions of {path} to {oct(target)}")
+    except PermissionError as e:
+        raise PermissionError(
+            f"Failed to set permissions of {path}: {e}. "
+            f"\nTry running chmod manually:\n"
+            f'sudo chmod {oct(target)} "{path}"'
+        ) from e
 
-    Fixes the permissions of a given path by setting the permissions to at least
-    770. If the script is running as root, the owner will be changed to the
-    owner of the reference path.
+
+def chown(path: Path, uid: int, gid: int) -> None:
+    """Change the ownership of the given path."""
+    try:
+        os.chown(path, uid, gid)  # type: ignore pylint: disable=no-member
+        print(f"Set ownership of {path} to {uid}:{gid}")
+    except PermissionError as e:
+        raise PermissionError(
+            f"Failed to set ownership of {path}: {e}. "
+            f"\nTry running chown manually:\n"
+            f'sudo chown {uid}:{gid} "{path}"'
+        ) from e
+
+
+def fix_permissions(
+    path: Path, cur_uid: int, ref_stat: os.stat_result, target: int
+) -> None:
+    """Changes the permissions and owner of the given path.
 
     Args:
         path: The path to fix permissions for.
-        cur_stat: The current stat result of the path.
+        cur_uid: The current uid of the path.
         ref_stat: The reference stat result.
         target: The target permissions to set.
 
     Raises:
         PermissionError: If the permissions or owner cannot be changed.
     """
-
     if not_posix():
         return
 
@@ -673,48 +674,22 @@ def fix_permissions(
     scr_uid = os.getuid()  # type: ignore pylint: disable=no-member
     root = bool(scr_uid == 0)
 
-    if not root and scr_uid != cur_stat.st_uid:
-        # Can't fix permissions
+    # The script must be running as root or own the path to set permissions
+    if not root and scr_uid != cur_uid:
         raise PermissionError(
             f"Cannot fix permissions of {path} because the script is not "
             f"running as the owner or root. Try running chown manually:\n"
             f'sudo chown -R {scr_uid}:{scr_uid} "{path}"\n'
         )
 
-    # The script is running as root or owns the path
+    chmod(path, target)
 
-    try:
-        os.chmod(path, target)
-        print(f"Changed permissions of {path} to {oct(target)}")
-    except PermissionError as e:
-        raise PermissionError(
-            f"Failed to change permissions of {path}: {e}. "
-            f"\nTry running chmod manually:\n"
-            f'sudo chmod {oct(target)} "{path}"'
-        ) from e
-    except OSError as e:
-        raise OSError(f"Failed to change permissions of {path}: {e}") from e
-
-    if not root:
-        # Done all we can
-        return
-
-    new_owner = f"{ref_uid}:{ref_gid}"
-    try:
-        # Changing ownership so that folders aren't owned by root
-        if ref_uid != 0:
-            os.chown(path, ref_uid, ref_gid)  # type: ignore pylint: disable=no-member
-            print(f"Changed ownership of {path} to {ref_uid}:{ref_gid}")
-    except PermissionError as e:
-        raise PermissionError(
-            f"Failed to change ownership of {path}: {e}. "
-            f"\nTry running chown manually:\n"
-            f'sudo chown -R {new_owner} "{path}"'
-        ) from e
+    if root:
+        chown(path, ref_uid, ref_gid)
 
 
 def check_permissions(path: Path, ref: os.stat_result) -> None:
-    """Apply permissions to a given path and its parent directories.
+    """Ensures permissions are correct on the given path.
 
     Only works on POSIX systems. Recursively checks the path and its parents
     starting from destination_folder. Fixes incorrect permissions and ownership
@@ -736,12 +711,10 @@ def check_permissions(path: Path, ref: os.stat_result) -> None:
         return
 
     if not path.is_relative_to(Config.destination_folder):
-        # probably configuration error, so alert
         print(f"Error: {path} is not a child of {Config.destination_folder}")
         return
 
     if path.parent != Config.destination_folder:
-        # start at top
         check_permissions(path.parent, ref)
 
     cur_stat = os.stat(path)
@@ -750,7 +723,7 @@ def check_permissions(path: Path, ref: os.stat_result) -> None:
     if (cur_stat.st_mode & 0o777) == target:
         return
 
-    fix_permissions(path, cur_stat, ref, target)
+    fix_permissions(path, cur_stat.st_uid, ref, target)
 
 
 def move_file(src: Path, dst: Path) -> tuple[str, int]:
@@ -815,12 +788,6 @@ def rename_and_move(file_path: Path) -> tuple[str, int]:
     new_path = info.construct_path()
 
     if new_path.exists():
-        if Config.refresh_perms:
-            ref_stat = os.stat(Config.destination_folder)
-            try:
-                check_permissions(new_path, ref_stat)
-            except OSError as e:
-                print(f"Error: {e}")
         # If the new file already exists, print an error and exit
         return f"File {new_path.name} already exists in {new_path.parent}", 1
 
@@ -829,26 +796,16 @@ def rename_and_move(file_path: Path) -> tuple[str, int]:
         return move_file(info.path, new_path)
 
     # find if an existing video file with same edition and event number exists
-    existing = find_editions(new_path.parent, info.event_number)
-
-    x_info = existing.get(info.edition)
+    x_info = find_editions(new_path.parent, info.event_number).get(info.edition)
 
     if x_info is None or x_info.path == file_path:
         return move_file(info.path, new_path)
 
     # if there is no resolution in either, the new file is preferred
+    res_diff = int(info.resolution[:-1] or 99999) - int(x_info.resolution[:-1] or 0)
 
-    new_res = int(info.resolution[:-1] or 99999)
-    old_res = int(x_info.resolution[:-1] or 0)
-
-    if new_res == old_res or new_res > old_res:
-        if new_res == old_res and not Config.replace_same_res:
-            if Config.refresh_perms:
-                ref_stat = os.stat(Config.destination_folder)
-                try:
-                    check_permissions(x_info.path, ref_stat)
-                except OSError as e:
-                    print(f"Error: {e}")
+    if not res_diff or res_diff > 0:
+        if not res_diff and not Config.replace_same_res:
             return (
                 f"File {x_info.path.name} already exists in "
                 f"{new_path.parent} with the same resolution.",
@@ -865,13 +822,6 @@ def rename_and_move(file_path: Path) -> tuple[str, int]:
 
         return move_file(info.path, new_path)
 
-    if Config.refresh_perms:
-        ref_stat = os.stat(Config.destination_folder)
-        try:
-            check_permissions(x_info.path, ref_stat)
-        except OSError as e:
-            print(f"Error: {e}")
-
     # If the existing file has a higher resolution, error
     return (
         f"File {x_info.path.name} already exists in "
@@ -887,8 +837,8 @@ def bulk_rename(
 ) -> int:
     """Recursively renames and moves files in the directory.
 
-    Renames video files according to configured format and moves them to appropriate
-    locations. Can optionally remove empty directories after processing.
+    Runs a rename_and_move on every UFC file in the directory. Can optionally
+    remove empty directories after processing.
 
     Args:
         directory: The directory to process. Defaults to Config.destination_folder.
@@ -912,21 +862,17 @@ def bulk_rename(
 
     for entry in os.scandir(directory):
         path = Path(entry.path)
-        if path.name.startswith("."):
-            # skip hidden
+        if path.name.startswith(".") or (
+            not in_ufc_folder and not re.search(UFCRegex.EVENT_NUMBER.value, path.name)
+        ):
             continue
 
-        if not in_ufc_folder and not VideoInfo.get_event_number(path.name):
-            # Checks if the folder has an event number. This check is skipped
-            # if we're already in a UFC folder
-            continue
-
-        subres = 0
+        error = 0
 
         if path.is_dir():
-            subres = bulk_rename(path, remove_empty, in_ufc_folder=True)
+            error = bulk_rename(path, remove_empty, in_ufc_folder=True)
 
-            if not subres and remove_empty and not any(path.iterdir()):
+            if not error and remove_empty and not any(path.iterdir()):
                 if Config.dry_run:
                     print(f"Removing empty folder {path}")
                 else:
@@ -941,14 +887,14 @@ def bulk_rename(
 
             print("DNF: " + message if exit_code else message)
 
-            subres = exit_code
+            error = exit_code
 
-        res += subres
+        res += error
 
     return res
 
 
-def parse_args() -> object:
+def parse_args() -> Path:
     """Parses command line arguments.
 
     Returns:
@@ -960,82 +906,58 @@ def parse_args() -> object:
     """
 
     parser = argparse.ArgumentParser()
+    # Define arguments
     parser.add_argument(
         "-d",
-        "--dir",
-        default=Config.destination_folder,
+        "--directory",
         help="The directory containing the video files to be processed",
     )
     parser.add_argument(
         "-c",
         "--category",
-        help=(
-            "The category of the download. If it matches UFC_CATEGORY, "
-            "STRICT_MATCHING will be set to True"
-        ),
+        help="Download category. Enables strict matching if it matches ufc_category",
     )
     parser.add_argument(
-        "-D", "--dest", help="The destination folder for the renamed files"
-    )
-    parser.add_argument(
-        "-r",
         "--replace-same-res",
         action="store_true",
-        help="Replace existing files with the same resolution in the name",
-    )
-    parser.add_argument(
-        "-s",
-        "--strict-matching",
-        action="store_true",
-        help="Fail if the event number cannot be found in the file name",
+        help="Replace existing files with same resolution",
     )
     parser.add_argument(
         "--rename-all",
         action="store_true",
-        help="Rename all UFC folders and files in the directory. Use with caution.",
+        help="Rename all UFC folders/files. Use with caution",
     )
     parser.add_argument(
         "--remove-empty",
         action="store_true",
-        help="Remove empty folders after renaming.",
+        help="Remove empty folders after renaming",
     )
     parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Print out the new filenames without actually moving the files.",
+        "--dry-run", action="store_true", help="Print filenames without moving files"
     )
     parser.add_argument(
-        "--refresh-perms", action="store_true", help="Run a check on all permissions."
+        "--refresh-perms", action="store_true", help="Run a check on all permissions"
     )
     args = parser.parse_args()
 
-    if args.dest:
-        Config.update(destination_folder=Path(args.dest))
+    # Update config settings from command line args
+    for arg_name in ("replace_same_res", "dry_run", "refresh_perms"):
+        if getattr(args, arg_name):
+            Config.update(**{arg_name: True})
 
-    if args.replace_same_res:
-        Config.update(replace_same_res=True)
-
-    if args.strict_matching or args.category == Config.ufc_category:
+    if args.category == Config.ufc_category:
         Config.update(strict_matching=True)
 
-    if args.dry_run:
-        Config.update(dry_run=True)
+    directory = check_path(args.directory)
 
-    if args.refresh_perms:
-        Config.update(refresh_perms=True)
+    if args.rename_all:
+        bulk_rename(directory or Config.destination_folder, args.remove_empty)
+        exit_log("Done.", exit_code=0)
 
-    try:
-        directory = check_path(args.dir)
-        if not directory:
-            exit_log("Invalid starting directory.", exit_code=1)
-    except NotADirectoryError as e:
-        exit_log(f"Invalid starting directory: {e}", exit_code=1)
+    if not directory:
+        exit_log(f"Invalid starting directory: {directory}", exit_code=1)
 
-    if not args.rename_all:
-        return directory
-
-    bulk_rename(directory, args.remove_empty)
-    exit_log("Done.", exit_code=0)
+    return directory
 
 
 def main() -> None:
@@ -1064,35 +986,12 @@ def main() -> None:
     except (FileNotFoundError, ValueError) as e:
         exit_log(f"Failed to load configuration: {e}", exit_code=1)
 
-    directory, category = check_path(sys.argv[1], False), None
+    directory = check_path(os.getenv("SAB_COMPLETE_DIR"))
+    category = os.getenv("SAB_CAT")
 
-    if len(sys.argv) == 2 and directory:
-        # only a job path is provided
-        directory = sys.argv[1]
-
-    elif os.getenv("SAB_COMPLETE_DIR") and os.getenv("SAB_CAT"):
-        # running from SABnzbd
-        # Print newlines so the 'more' button is available in sabnzbd
-        print("\n\n")
-        directory = os.getenv("SAB_COMPLETE_DIR")
-        category = os.getenv("SAB_CAT")
-
-        if not directory or not category:
-            exit_log("SAB_COMPLETE_DIR or SAB_CAT not set.", exit_code=1)
-
-    else:
-        # running manually
-        directory = parse_args()
-
-    try:
-        directory = check_path(directory)
-        if not directory:
-            raise NotADirectoryError(directory)
-    except NotADirectoryError as e:
-        exit_log(f"Invalid job directory: {e}", exit_code=1)
-
-    if category == Config.ufc_category:
-        Config.update(strict_matching=True)
+    if not (directory and category):
+        if not (directory := check_path(sys.argv[1])):
+            directory = parse_args()
 
     # Filter video files
     video_file = find_largest_video_file(directory)
