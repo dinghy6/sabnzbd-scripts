@@ -22,7 +22,8 @@ from configparser import ConfigParser
 from typing import NoReturn, ClassVar
 
 # Define the configuration file path. Defaults to ufc.ini in the script directory.
-# This will fallback to ufc.ini.template if the main file does not exist.
+# This will fallback to ufc.ini.template if the given path does not exist.
+# INI_PATH = Path("/path/to/ini")
 INI_PATH = Path(__file__).parent / "ufc.ini"
 
 
@@ -32,6 +33,11 @@ class Bracket(Enum):
     SQUARE = ("[", "]")
     CURLY = ("{", "}")
     ROUND = ("(", ")")
+
+    def surround(self, text: str) -> str:
+        """Surround the given text with the bracket."""
+        left, right = self.value
+        return f"{left}{text}{right}"
 
 
 class Edition(Enum):
@@ -52,6 +58,26 @@ class UFCAttr(Enum):
     FIGHTER_NAMES = "fighter_names"
     EDITION = "edition"
     RESOLUTION = "resolution"
+
+    def __str__(self) -> str:
+        return self.value
+
+
+class UFCRegex(Enum):
+    """Enum for regex patterns used to extract UFC event attributes."""
+
+    EVENT_NUMBER = (
+        r"ufc ?(?P<ppv>\d+)"
+        r"|ufc ?fight ?night (?P<fnight>\d+)"
+        r"|ufc ?on ?(?P<ufc_on>\w+ \d+)"
+    )
+    FIGHTER_NAMES = (
+        r"(?:(?<= )|(?<=^))[{[(]?"
+        r"(?P<name1>(?:(?!ppv|main|event|prelim|preliminary)[a-z-]+ )+)"
+        r"vs(?P<name2>(?:(?: )?(?!ppv|main|prelim|early|web)[a-z-]+)+)"
+        r"(?: ?(?![0-9]{2,})(?P<num>[0-9]))?[}\])]?"
+    )
+    EDITION = r"early prelims|prelims|preliminary"
 
     def __str__(self) -> str:
         return self.value
@@ -320,7 +346,7 @@ class Config:
         exit_log(f"Permission check failed: {path} is not a file or directory", 1)
 
 
-@dataclass
+@dataclass(frozen=True)
 class VideoInfo:
     """Defines video information extracted from the file name."""
 
@@ -357,18 +383,17 @@ class VideoInfo:
         if not path.exists():
             exit_log(f"File {path} does not exist", exit_code=1)
 
-        self.path = path
-        self._strict = strict
+        object.__setattr__(self, "path", path)
+        object.__setattr__(self, "_strict", strict)
         # Unify separators to spaces to make regex patterns less ungodly
-        self._name = re.sub(r"[\.\s_]", " ", path.name)
+        name = re.sub(r"[\.\s_]", " ", path.name)
 
-        event_number = self.get_event_number(self._name)
-        if not event_number and path.is_file():
-            # Check folder name and reassign _name for further parsing
-            self._name = re.sub(r"[\.\s_]", " ", path.parent.name)
-            self.event_number = self.get_event_number(self._name)
-        else:
-            self.event_number = event_number
+        if not (event_number := self.get_event_number(name)) and path.is_file():
+            # Check folder name and reassign name for further parsing
+            name = re.sub(r"[\.\s_]", " ", path.parent.name)
+            event_number = self.get_event_number(name)
+        object.__setattr__(self, "event_number", event_number)
+        object.__setattr__(self, "_name", name)
 
         self.set_fighter_names()
         if not self.fighter_names and self._strict:
@@ -406,13 +431,7 @@ class VideoInfo:
             "ufc_on": lambda m: f"UFC on {m.upper()}",
         }
 
-        pattern = (
-            r"ufc ?(?P<ppv>\d+)"
-            r"|ufc ?fight ?night (?P<fnight>\d+)"
-            r"|ufc ?on ?(?P<ufc_on>\w+ \d+)"
-        )
-
-        if match := re.search(pattern, name, re.IGNORECASE):
+        if match := re.search(UFCRegex.EVENT_NUMBER.value, name, re.I):
             group = match.lastgroup
             return event_fmt[group](match.group(group)) if group else ""
         return ""
@@ -423,19 +442,15 @@ class VideoInfo:
         Args:
             name: The string to search in.
         """
-        # This is a delicate baby
-        pattern = (
-            r"(?:(?<= )|(?<=^))[{[(]?"
-            r"(?P<name1>(?:(?!ppv|main|event|prelim|preliminary)[a-z-]+ )+)"
-            r"vs(?P<name2>(?:(?: )?(?!ppv|main|prelim|early|web)[a-z-]+)+)"
-            r"(?: ?(?![0-9]{2,})(?P<num>[0-9]))?[}\])]?"
-        )
-
-        if match := re.search(pattern, name or self.path.name, re.IGNORECASE):
+        if match := re.search(
+            UFCRegex.FIGHTER_NAMES.value, name or self.path.name, re.I
+        ):
             name1 = match.group("name1").strip().title()
             name2 = match.group("name2").strip().title()
             num = match.group("num")
-            self.fighter_names = f"{name1} vs {name2}{f' {num}' if num else ''}"
+            object.__setattr__(
+                self, "fighter_names", f"{name1} vs {name2}{f' {num}' if num else ''}"
+            )
 
     def find_names(self, directory: Path | None = None) -> None:
         """Attempts to find and set fighter names from existing folders.
@@ -459,15 +474,15 @@ class VideoInfo:
         Assigns a value from the Edition enum based on extracted edition type.
         If no edition is detected in the filename, assigns Edition.MAIN_EVENT as default.
         """
-        pattern = r"early prelims|prelims|preliminary"
-        match = re.search(pattern, self._name, re.IGNORECASE)
+        match = re.search(UFCRegex.EDITION.value, self._name, re.I)
 
         # Map match to enum
-        self.edition = {
+        edition = {
             "early prelims": Edition.EARLY_PRELIMS,
             "prelims": Edition.PRELIMS,
             "preliminary": Edition.PRELIMS,
         }.get(match.group(0).lower() if match else "", Edition.MAIN_EVENT)
+        object.__setattr__(self, "edition", edition)
 
     def set_resolution(self) -> None:
         """Sets the resolution extracted from `_name`.
@@ -476,9 +491,58 @@ class VideoInfo:
         Converts 4K/UHD to 2160p. Looks for resolution with scan mode (p/i)
         and sets empty string if no resolution found.
         """
-        name = re.sub(r"4k|uhd", "2160p", self._name, flags=re.IGNORECASE)
-        if match := re.search(r"\d{3,4}[pi]", name, re.IGNORECASE):
-            self.resolution = match.group(0).lower()
+        name = re.sub(r"4k|uhd", "2160p", self._name, flags=re.I)
+        if match := re.search(r"\d{3,4}[pi]", name, re.I):
+            object.__setattr__(self, "resolution", match.group(0).lower())
+
+    def construct_path(self) -> Path:
+        """Constructs a new file path, conforming to configured fomatting rules.
+
+        Returns:
+            A new file path following the configured format rules.
+        """
+        in_subfolder = bool(Config.subfolder and self.edition != Edition.MAIN_EVENT)
+
+        parts = []
+        folder_parts = []
+
+        for part in Config.format_order:
+            if not (value := getattr(self, part)):
+                continue
+
+            if isinstance(value, Edition):
+                value = str(value) if in_subfolder else f"edition-{value}"
+
+            # Add to folder name
+            if part in Config.format_folder:
+                folder_parts.append(value)
+
+            # Limit subfolder filename parts
+            if in_subfolder and part not in Config.format_subfolder:
+                continue
+
+            # Add brackets if specified
+            if token := Config.format_tokens.get(part):
+                value = token.surround(value)
+
+            # Add to filename
+            parts.append(value)
+
+        # e.g. UFC Fight Night 248 Yan vs Figueiredo
+        folder_name = " ".join(folder_parts)
+
+        if not is_valid_folder_name(folder_name):
+            exit_log(f"Invalid folder name: {folder_name}", exit_code=1)
+
+        dest = Config.destination_folder / folder_name
+        if in_subfolder and Config.subfolder:
+            dest /= Config.subfolder
+
+        # e.g. UFC Fight Night 248 Yan vs Figueiredo {edition-Main Event} [1080p].mkv
+        # or for subfolders: UFC Fight Night 248 {Prelims}.mkv
+        file_name = " ".join(parts) + self.path.suffix
+
+        return dest / file_name
 
 
 def exit_log(message: str = "", exit_code: int = 1) -> NoReturn:
@@ -528,6 +592,16 @@ def check_path(path: object, error: bool = True) -> Path | None:
     return directory
 
 
+def is_valid_folder_name(name: str) -> bool:
+    """Validates folder name. Returns `True` if valid, `False` otherwise."""
+    return bool(name and name.strip() == name and not re.search(r'[\\/:*?"<>|]', name))
+
+
+def not_posix() -> bool:
+    """Checks if the script is not running on a POSIX system."""
+    return os.name != "posix"
+
+
 def find_editions(path: Path, event_number: str) -> dict[Edition, VideoInfo]:
     """Scans the given directory and returns an `Edition`: `VideoInfo` map.
 
@@ -570,74 +644,6 @@ def find_largest_video_file(video_path: Path) -> Path | None:
         )
     except (NotADirectoryError, FileNotFoundError):
         return None
-
-
-def construct_path(file_path: Path) -> tuple[Path, VideoInfo]:
-    """Constructs a new file path for a UFC video file based on extracted information.
-
-    The formatting is defined in the Format.X variables.
-
-    Args:
-        file_path: The full path to the original video file.
-
-    Returns:
-        A tuple containing the new constructed file path and a `VideoInfo` instance
-        containing extracted metadata from the filename.
-    """
-    info = VideoInfo(file_path)
-    in_subfolder = bool(Config.subfolder and info.edition != Edition.MAIN_EVENT)
-
-    parts = []
-    folder_parts = []
-
-    for part in Config.format_order:
-        if not (value := getattr(info, part)):
-            continue
-
-        if isinstance(value, Edition):
-            value = str(value) if in_subfolder else f"edition-{value}"
-
-        # Add to folder name
-        if part in Config.format_folder:
-            folder_parts.append(value)
-
-        # Limit subfolder filename parts
-        if in_subfolder and part not in Config.format_subfolder:
-            continue
-
-        # Add brackets if specified
-        if token := Config.format_tokens.get(part):
-            left, right = token.value
-            value = f"{left}{value}{right}"
-
-        # Add to filename
-        parts.append(value)
-
-    # e.g. UFC Fight Night 248 Yan vs Figueiredo
-    folder_name = " ".join(folder_parts)
-
-    if not is_valid_folder_name(folder_name):
-        exit_log(f"Invalid folder name: {folder_name}", exit_code=1)
-
-    dest = Config.destination_folder / folder_name
-    if in_subfolder and Config.subfolder:
-        dest /= Config.subfolder
-
-    # e.g. UFC Fight Night 248 Yan vs Figueiredo {edition-Main Event} [1080p].mkv
-    # or for subfolders: UFC Fight Night 248 {Prelims}.mkv
-    file_name = " ".join(parts) + file_path.suffix
-
-    return (dest / file_name), info
-
-
-def is_valid_folder_name(name: str) -> bool:
-    """Validates folder name. Returns `True` if valid, `False` otherwise."""
-    return bool(name and name.strip() == name and not re.search(r'[\\/:*?"<>|]', name))
-
-
-def not_posix() -> bool:
-    """Checks if the script is not running on a POSIX system."""
-    return os.name != "posix"
 
 
 def fix_permissions(
@@ -805,7 +811,8 @@ def rename_and_move(file_path: Path) -> tuple[str, int]:
     """
 
     # VideoInfo obj includes file_path, not new_path
-    new_path, info = construct_path(file_path)
+    info = VideoInfo(file_path)
+    new_path = info.construct_path()
 
     if new_path.exists():
         if Config.refresh_perms:
