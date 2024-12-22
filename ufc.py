@@ -17,8 +17,8 @@ import shutil
 import argparse
 from enum import Enum
 from pathlib import Path
+from dataclasses import dataclass
 from configparser import ConfigParser
-from dataclasses import dataclass, fields
 from typing import NoReturn, ClassVar
 
 # Define the configuration file path. Defaults to ufc.ini in the script directory.
@@ -41,74 +41,20 @@ class Edition(Enum):
     PRELIMS = "Prelims"
     MAIN_EVENT = "Main Event"
 
+    def __str__(self) -> str:
+        return self.value
 
-@dataclass
-class VideoInfo:
-    """Defines video information extracted from the file name."""
 
-    event_number: str = ""
-    """The UFC event number e.g. UFC 248"""
-    fighter_names: str = ""
-    """The fighter names e.g. Yan vs Figueiredo 2"""
-    edition: Edition = Edition.MAIN_EVENT
-    """The UFC event edition as an Enum"""
-    resolution: str = ""
-    """The video resolution e.g. 1080p"""
-    path: Path = Path("")
-    """The full path to the source video file"""
+class UFCAttr(Enum):
+    """Enum for UFC event attributes."""
 
-    def __init__(self, path: Path, strict: bool = True) -> None:
-        """Extracts and assigns information from a UFC video file name.
+    EVENT_NUMBER = "event_number"
+    FIGHTER_NAMES = "fighter_names"
+    EDITION = "edition"
+    RESOLUTION = "resolution"
 
-        Args:
-            path: Path of the file to extract information from
-            strict: Whether to  attempt to find missing info in other folders
-
-        Extracts the event number, fighter names, edition and resolution from
-        the filename. With strict=True, will try harder to find info and fail
-        on errors. If strict_matching is false, will silently exit on errors.
-
-        Raises:
-            SystemExit: If required info cannot be found in strict mode
-        """
-
-        if not path or not path.exists():
-            exit_log(f"File {path} does not exist", exit_code=1)
-
-        self.path = path
-
-        # Unify separators to spaces to make regex patterns less ungodly
-        name = re.sub(r"[\.\s_]", " ", path.name)
-
-        event_number = get_event_number(name)
-
-        if not event_number:
-            # might be obfuscated, check folder name
-            folder_name = re.sub(r"[\.\s_]", " ", path.parent.name)
-            event_number = get_event_number(folder_name)
-            if event_number:
-                name = folder_name
-
-        if not event_number and strict:
-            if Config.strict_matching:
-                # error exit
-                exit_log(f"Unable to extract UFC event number from {name}", exit_code=1)
-            else:
-                # silent exit
-                exit_log(exit_code=0)
-
-        fighter_names = get_fighter_names(name)
-
-        if not fighter_names and strict:
-            # we need to go deeper
-            fighter_names = find_names(Config.destination_folder, event_number)
-
-        edition = get_edition(name)
-
-        self.event_number = event_number
-        self.fighter_names = fighter_names
-        self.edition = edition
-        self.resolution = get_resolution(name)
+    def __str__(self) -> str:
+        return self.value
 
 
 @dataclass
@@ -133,41 +79,33 @@ class Config:
     """
 
     # The following docstrings are for hints in IDEs, not for documentation
-    destination_folder: ClassVar[Path] = Path("/mnt/media/Sport/")
+    destination_folder: ClassVar[Path]
     """Root folder for UFC videos"""
-    subfolder: ClassVar[str | None] = "Other"
+    subfolder: ClassVar[str | None]
     """Name of subfolder for non-main events"""
-    ufc_category: ClassVar[str] = "ufc"
+    ufc_category: ClassVar[str]
     """Category name for UFC downloads"""
-    strict_matching: ClassVar[bool] = False
+    strict_matching: ClassVar[bool]
     """Whether to enforce strict name matching"""
-    replace_same_res: ClassVar[bool] = False
+    replace_same_res: ClassVar[bool]
     """Whether to replace files with same resolution"""
-    dry_run: ClassVar[bool] = False
+    dry_run: ClassVar[bool]
     """Whether to simulate operations without changes"""
-    video_extensions: ClassVar[set[str]] = {".mp4", ".mkv", ".avi", ".mov"}
+    video_extensions: ClassVar[set[str]]
     """Valid video file extensions"""
-    file_permissions: ClassVar[int] = 0o660
+    file_permissions: ClassVar[int]
     """Default file permissions"""
-    folder_permissions: ClassVar[int] = 0o770
+    folder_permissions: ClassVar[int]
     """Default folder permissions"""
-    format_order: ClassVar[list[str]] = [
-        "event_number",
-        "fighter_names",
-        "edition",
-        "resolution",
-    ]
+    format_order: ClassVar[list[str]]
     """Order of parts in fomatted path names"""
-    format_tokens: ClassVar[dict[str, "Bracket"]] = {
-        "edition": Bracket.CURLY,
-        "resolution": Bracket.SQUARE,
-    }
+    format_tokens: ClassVar[dict[str, "Bracket"]]
     """Bracket style for each part"""
-    format_folder: ClassVar[set[str]] = {"event_number", "fighter_names"}
+    format_folder: ClassVar[set[str]]
     """Parts to include in folder names"""
-    format_subfolder: ClassVar[set[str]] = {"event_number", "edition"}
+    format_subfolder: ClassVar[set[str]]
     """Parts to include in filenames inside subfolders"""
-    refresh_perms: ClassVar[bool] = False
+    refresh_perms: ClassVar[bool]
     """Whether to check and fix permissions aggressively"""
 
     @classmethod
@@ -226,27 +164,19 @@ class Config:
     def _load_categories(cls, config: ConfigParser) -> None:
         """Load category settings from the configuration."""
         cls.ufc_category = config["Categories"]["ufc_category"]
-        cls.strict_matching = config["Categories"].getboolean(
-            "strict_matching", cls.strict_matching
-        )
+        cls.strict_matching = config["Categories"].getboolean("strict_matching")
 
     @classmethod
     def _load_file_handling(cls, config: ConfigParser) -> None:
         """Load file handling settings from the configuration."""
-        cls.replace_same_res = config["FileHandling"].getboolean(
-            "replace_same_res", cls.replace_same_res
-        )
-        cls.dry_run = config["FileHandling"].getboolean("dry_run", cls.dry_run)
+        section = config["FileHandling"]
+        cls.replace_same_res = section.getboolean("replace_same_res")
+        cls.dry_run = section.getboolean("dry_run", cls.dry_run)
         cls.video_extensions = set(
-            ext.strip().lower()
-            for ext in config["FileHandling"]["video_extensions"].split(",")
+            ext.strip().lower() for ext in section["video_extensions"].split(",")
         )
-        cls.file_permissions = cls.parse_permissions(
-            config["FileHandling"]["file_permissions"]
-        )
-        cls.folder_permissions = cls.parse_permissions(
-            config["FileHandling"]["folder_permissions"]
-        )
+        cls.file_permissions = cls.parse_permissions(section["file_permissions"])
+        cls.folder_permissions = cls.parse_permissions(section["folder_permissions"])
 
     @classmethod
     def _load_format_settings(cls, config: ConfigParser) -> None:
@@ -259,19 +189,20 @@ class Config:
     @classmethod
     def _get_ordered_parts(cls, config: ConfigParser) -> list[str]:
         """Get ordered parts from the configuration."""
+        section = config["Format.Order"]
         ordered_parts = [
             key
             for key, _ in sorted(
-                (
-                    (key, value)
-                    for key, value in config["Format.Order"].items()
-                    if value.isdigit()
-                ),
+                ((key, value) for key, value in section.items() if value.isdigit()),
                 key=lambda item: item[1],
             )
         ]
+        if str(UFCAttr.EVENT_NUMBER) not in ordered_parts:
+            raise ValueError("Format.Order must contain 'event_number'.")
         if len(ordered_parts) < 2:
             raise ValueError("Format.Order must contain at least 2 parts.")
+        if len(ordered_parts) != len(set(ordered_parts)):
+            raise ValueError("Format.Order contains duplicate parts.")
         return ordered_parts
 
     @classmethod
@@ -321,7 +252,7 @@ class Config:
     @classmethod
     def _validate_format_parts(cls, config: ConfigParser) -> None:
         """Validate format parts against VideoInfo fields."""
-        format_parts = set(f.name for f in fields(VideoInfo)) - {"path"}
+        format_parts = set(str(x) for x in UFCAttr)
         # Format parts must match VideoInfo fields
         errors = []
         for name, parts in [
@@ -389,6 +320,167 @@ class Config:
         exit_log(f"Permission check failed: {path} is not a file or directory", 1)
 
 
+@dataclass
+class VideoInfo:
+    """Defines video information extracted from the file name."""
+
+    event_number: str = ""
+    """The UFC event number e.g. UFC 248"""
+    fighter_names: str = ""
+    """The fighter names e.g. Yan vs Figueiredo 2"""
+    edition: Edition = Edition.MAIN_EVENT
+    """The UFC event edition as an Enum"""
+    resolution: str = ""
+    """The video resolution e.g. 1080p"""
+    path: Path = Path("")
+    """The full path to the source video file"""
+    _name: str = ""
+    """The original file (or folder) name"""
+    _strict: bool = True
+    """Whether to enforce strict name matching"""
+
+    def __init__(self, path: Path, strict: bool = True) -> None:
+        """Extracts and assigns information from a UFC video file name.
+
+        Args:
+            path: Path of the file to extract information from
+            strict: Whether to  attempt to find missing info in other folders
+
+        Extracts the event number, fighter names, edition and resolution from
+        the filename. With strict=True, will try harder to find info and fail
+        on errors. If strict_matching is false, will silently exit on errors.
+
+        Raises:
+            SystemExit: If required info cannot be found in strict mode
+        """
+
+        if not path.exists():
+            exit_log(f"File {path} does not exist", exit_code=1)
+
+        self.path = path
+        self._strict = strict
+        # Unify separators to spaces to make regex patterns less ungodly
+        self._name = re.sub(r"[\.\s_]", " ", path.name)
+
+        event_number = self.get_event_number(self._name)
+        if not event_number and path.is_file():
+            # Check folder name and reassign _name for further parsing
+            self._name = re.sub(r"[\.\s_]", " ", path.parent.name)
+            self.event_number = self.get_event_number(self._name)
+        else:
+            self.event_number = event_number
+
+        self.set_fighter_names()
+        if not self.fighter_names and self._strict:
+            self.find_names()
+
+        self.set_edition()
+        self.set_resolution()
+
+    def __post_init__(self):
+        """Post-initialization method to validate extracted information."""
+        if not self.event_number and self._strict:
+            if Config.strict_matching:
+                exit_log(
+                    f"Unable to extract UFC event number from {self.path}", exit_code=1
+                )
+            else:
+                exit_log(exit_code=0)
+
+    @staticmethod
+    def get_event_number(name: str) -> str:
+        """Extracts the event number from a string.
+
+        Args:
+            name: The string to search in.
+
+        Returns:
+            The extracted event number including the event type (UFC, Fight Night, etc.),
+            or `""` if no event number is found.
+        """
+        # there are also 'UFC Live' events which will not be caught, but they usually
+        # don't have a number anyway.
+        event_fmt = {
+            "ppv": lambda m: f"UFC {m}",
+            "fnight": lambda m: f"UFC Fight Night {m}",
+            "ufc_on": lambda m: f"UFC on {m.upper()}",
+        }
+
+        pattern = (
+            r"ufc ?(?P<ppv>\d+)"
+            r"|ufc ?fight ?night (?P<fnight>\d+)"
+            r"|ufc ?on ?(?P<ufc_on>\w+ \d+)"
+        )
+
+        if match := re.search(pattern, name, re.IGNORECASE):
+            group = match.lastgroup
+            return event_fmt[group](match.group(group)) if group else ""
+        return ""
+
+    def set_fighter_names(self, name: str | None = None) -> None:
+        """Assigns fighter names from a video file name.
+
+        Args:
+            name: The string to search in.
+        """
+        # This is a delicate baby
+        pattern = (
+            r"(?:(?<= )|(?<=^))[{[(]?"
+            r"(?P<name1>(?:(?!ppv|main|event|prelim|preliminary)[a-z-]+ )+)"
+            r"vs(?P<name2>(?:(?: )?(?!ppv|main|prelim|early|web)[a-z-]+)+)"
+            r"(?: ?(?![0-9]{2,})(?P<num>[0-9]))?[}\])]?"
+        )
+
+        if match := re.search(pattern, name or self.path.name, re.IGNORECASE):
+            name1 = match.group("name1").strip().title()
+            name2 = match.group("name2").strip().title()
+            num = match.group("num")
+            self.fighter_names = f"{name1} vs {name2}{f' {num}' if num else ''}"
+
+    def find_names(self, directory: Path | None = None) -> None:
+        """Attempts to find and set fighter names from existing folders.
+
+        Recursively searches the directory for matches of `event_number`. This also
+        enables a bulk rename to fix folders with missing fighter names.
+        """
+        directory = directory or Config.destination_folder
+        for path in directory.glob(f"*{self.event_number}*", case_sensitive=False):
+            self.set_fighter_names(path.name)
+
+            if path.is_dir() and not self.fighter_names:
+                self.find_names(path)
+
+            if self.fighter_names:
+                break
+
+    def set_edition(self) -> None:
+        """Sets the edition from `_name`.
+
+        Assigns a value from the Edition enum based on extracted edition type.
+        If no edition is detected in the filename, assigns Edition.MAIN_EVENT as default.
+        """
+        pattern = r"early prelims|prelims|preliminary"
+        match = re.search(pattern, self._name, re.IGNORECASE)
+
+        # Map match to enum
+        self.edition = {
+            "early prelims": Edition.EARLY_PRELIMS,
+            "prelims": Edition.PRELIMS,
+            "preliminary": Edition.PRELIMS,
+        }.get(match.group(0).lower() if match else "", Edition.MAIN_EVENT)
+
+    def set_resolution(self) -> None:
+        """Sets the resolution extracted from `_name`.
+
+        Normalizes different resolution formats to a consistent string.
+        Converts 4K/UHD to 2160p. Looks for resolution with scan mode (p/i)
+        and sets empty string if no resolution found.
+        """
+        name = re.sub(r"4k|uhd", "2160p", self._name, flags=re.IGNORECASE)
+        if match := re.search(r"\d{3,4}[pi]", name, re.IGNORECASE):
+            self.resolution = match.group(0).lower()
+
+
 def exit_log(message: str = "", exit_code: int = 1) -> NoReturn:
     """Logs a message and exits the program with the specified exit code.
 
@@ -436,101 +528,6 @@ def check_path(path: object, error: bool = True) -> Path | None:
     return directory
 
 
-def get_event_number(file_name: str) -> str:
-    """Extracts the event number from a video file name.
-
-    Args:
-        file_name: The file name.
-
-    Returns:
-        The extracted event number including the event type (UFC, Fight Night, etc.),
-        or `""` if no event number is found.
-    """
-    # there are also 'UFC Live' events which will not be caught, but they usually
-    # don't have a number anyway.
-    event_fmt = {
-        "ppv": lambda m: f"UFC {m}",
-        "fnight": lambda m: f"UFC Fight Night {m}",
-        "ufc_on": lambda m: f"UFC on {m.upper()}",
-    }
-
-    pattern = (
-        r"ufc ?(?P<ppv>\d+)"
-        r"|ufc ?fight ?night (?P<fnight>\d+)"
-        r"|ufc ?on ?(?P<ufc_on>\w+ \d+)"
-    )
-
-    if match := re.search(pattern, file_name, re.IGNORECASE):
-        group = match.lastgroup
-        return event_fmt[group](match.group(group)) if group else ""
-    return ""
-
-
-def get_fighter_names(file_name: str) -> str:
-    """Extracts the fighter names from a video file name.
-
-    Args:
-        file_name: The file name.
-
-    Returns:
-        The extracted names or `""` if no names are found.
-    """
-    # This is a delicate baby
-    pattern = (
-        r"(?:(?<= )|(?<=^))"  # lookbehind for start of string or space
-        r"(?P<name1>(?:(?!ppv|main|event|prelim|preliminary)[a-z-]+ )+)"
-        #      can add more words to exclude in the start ^
-        r"vs ?"  # or the end of the names v
-        r"(?P<name2>(?:(?!ppv|main|prelim|early|web)[a-z-]+(?: |$))+)"
-        r"(?:(?![0-9]{2,})(?P<num>[0-9]))?"  # optional rematch number
-    )
-
-    if match := re.search(pattern, file_name, re.IGNORECASE):
-        name1 = match.group("name1").strip().title()
-        name2 = match.group("name2").strip().title()
-        num = match.group("num")
-        return f"{name1} vs {name2}{f' {num}' if num else ''}"
-    return ""
-
-
-def get_edition(file_name: str) -> Edition:
-    """Extracts the edition from a video file name.
-
-    Args:
-        file_name: The file name.
-
-    Returns:
-        The extracted edition as enum or `Edition.MAIN_EVENT` if none is found.
-    """
-    pattern = r"early prelims|prelims|preliminary"
-    match = re.search(pattern, file_name, re.IGNORECASE)
-
-    # Map match to enum
-    return {
-        "early prelims": Edition.EARLY_PRELIMS,
-        "prelims": Edition.PRELIMS,
-        "preliminary": Edition.PRELIMS,
-    }.get(match.group(0).lower() if match else "", Edition.MAIN_EVENT)
-
-
-def get_resolution(file_name: str) -> str:
-    """Extracts the resolution from a video file name.
-
-    Returns a string of the resolution and scan mode or if no resolution is
-    found, returns "". 4K and UHD are treated as 2160p.
-
-    Args:
-        file_name: The file name.
-
-    Returns:
-        The extracted resolution as string or "" if no resolution is found.
-    """
-    file_name = re.sub(r"4k|uhd", "2160p", file_name, flags=re.IGNORECASE)
-    if match := re.search(r"\d{3,4}[pi]", file_name, re.IGNORECASE):
-        return match.group(0).lower()
-    return ""
-
-
 def find_editions(path: Path, event_number: str) -> dict[Edition, VideoInfo]:
     """Scans the given directory and returns an `Edition`: `VideoInfo` map.
 
@@ -575,33 +572,6 @@ def find_largest_video_file(video_path: Path) -> Path | None:
         return None
 
 
-def find_names(
-    directory: Path = Config.destination_folder, event_number: str = ""
-) -> str:
-    """Attempts to find fighter names of a given UFC event from existing folders.
-
-    Recursively searches the directory for matches of `event_number`. This also
-    enables a bulk rename to fix folders with missing fighter names.
-
-    Args:
-        directory: The directory to search.
-        event_number: The UFC event number.
-
-    Returns:
-        The fighter names.
-    """
-    for path in directory.glob(f"*{event_number}*", case_sensitive=False):
-        info = VideoInfo(path, strict=False)
-
-        if path.is_dir() and not info.fighter_names:
-            info.fighter_names = find_names(path, event_number)
-
-        if info.fighter_names:
-            return info.fighter_names
-
-    return ""
-
-
 def construct_path(file_path: Path) -> tuple[Path, VideoInfo]:
     """Constructs a new file path for a UFC video file based on extracted information.
 
@@ -625,7 +595,7 @@ def construct_path(file_path: Path) -> tuple[Path, VideoInfo]:
             continue
 
         if isinstance(value, Edition):
-            value = value.value if in_subfolder else f"edition-{value.value}"
+            value = str(value) if in_subfolder else f"edition-{value}"
 
         # Add to folder name
         if part in Config.format_folder:
@@ -904,7 +874,7 @@ def rename_and_move(file_path: Path) -> tuple[str, int]:
 
 
 def bulk_rename(
-    directory: Path = Config.destination_folder,
+    directory: Path,
     remove_empty: bool = False,
     in_ufc_folder: bool = False,
 ) -> int:
@@ -939,7 +909,7 @@ def bulk_rename(
             # skip hidden
             continue
 
-        if not in_ufc_folder and not get_event_number(path.name):
+        if not in_ufc_folder and not VideoInfo.get_event_number(path.name):
             # Checks if the folder has an event number. This check is skipped
             # if we're already in a UFC folder
             continue
