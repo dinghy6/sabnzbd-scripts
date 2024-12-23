@@ -613,7 +613,7 @@ class PermissionHandler:
                 f'sudo chown {uid}:{gid} "{path}"'
             ) from e
 
-    def recursive_permission_check(self, path: Path) -> None:
+    def refresh_permissions(self, target_path: Path | None = None) -> None:
         """Ensures permissions are correct starting from the given path.
 
         Only works on POSIX systems. Recursively checks the path and its children,
@@ -621,42 +621,40 @@ class PermissionHandler:
         incorrect permissions and ownership to match preferred values from Config.
 
         Args:
-            path: The file or folder to check.
-            ref: Reference stat object to compare against.
+            target_path: The file or folder to check. Defaults to Config.destination_folder.
 
         Raises:
             PermissionError: If permissions or ownership cannot be fixed.
         """
-
-        if path.is_dir() and not os.access(path, os.W_OK):
-            print(f"Error: {path} is not valid and writable")
+        if not_posix():
             return
 
-        if not path.is_relative_to(Config.destination_folder):
-            print(f"Error: {path} is not a child of {Config.destination_folder}")
+        target_path = target_path or Config.destination_folder
+
+        if target_path.is_dir() and not os.access(target_path, os.W_OK):
+            print(f"Error: {target_path} is not valid and writable")
             return
 
-        if path.parent != Config.destination_folder:
-            self.recursive_permission_check(path.parent)
-
-        cur_stat = os.stat(path)
-        target = Config.get_permissions(path)
-
-        if (cur_stat.st_mode & 0o777) == target:
+        if not target_path.is_relative_to(Config.destination_folder):
+            print(f"Error: {target_path} is not a child of {Config.destination_folder}")
             return
 
-        # The script must be running as root or own the path to set permissions
-        if not self.is_root and self.script_uid != cur_stat.st_uid:
-            raise PermissionError(
-                f"Cannot fix permissions of {path} because the script is not "
-                f"running as the owner or root. Try running chown manually:\n"
-                f'sudo chown -R {self.script_uid}:{self.script_gid} "{path}"\n'
-            )
+        self._deep_permission_set(
+            target_path, Config.file_permissions, Config.folder_permissions
+        )
 
-        self.chmod(path, target)
-
-        if self.is_root:
-            self.chown(path, self.ref_uid, self.ref_gid)
+    def _deep_permission_set(
+        self, target_path: Path, file_perms: int, folder_perms: int
+    ) -> None:
+        """Ensures permissions are correct starting from the given path."""
+        for path in target_path.iterdir():
+            if self.is_root:
+                self.chown(path, self.ref_uid, self.ref_gid)
+            if path.is_dir():
+                self.chmod(path, folder_perms)
+                self._deep_permission_set(path, file_perms, folder_perms)
+            else:
+                self.chmod(path, file_perms)
 
 
 def exit_log(message: str = "", exit_code: int = 1) -> NoReturn:
@@ -930,6 +928,9 @@ def parse_args() -> Path:
 
     if args.category == Config.ufc_category:
         Config.update(strict_matching=True)
+
+    if args.refresh_perms:
+        PermissionHandler().refresh_permissions()
 
     directory = check_path(args.directory)
 
