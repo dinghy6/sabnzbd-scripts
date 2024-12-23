@@ -931,6 +931,8 @@ def parse_args() -> Path:
 
     if args.refresh_perms:
         PermissionHandler().refresh_permissions()
+        if not args.directory or not args.rename_all:
+            exit_log("Permissions refreshed.", exit_code=0)
 
     directory = check_path(args.directory)
 
