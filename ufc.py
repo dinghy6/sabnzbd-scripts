@@ -419,8 +419,7 @@ class VideoInfo:
             else:
                 exit_log(exit_code=0)
 
-    @staticmethod
-    def get_event_number(name: str) -> str:
+    def get_event_number(self, name: str) -> str:
         """Extracts the event number from a string.
 
         Args:
@@ -443,7 +442,7 @@ class VideoInfo:
 
     def _set_fighter_names(self, name: str | None = None) -> None:
         """Assigns fighter names from a video file name."""
-        if match := re.search(UFCRegex.FIGHTER_NAMES.value, name or self.path.name):
+        if match := re.search(UFCRegex.FIGHTER_NAMES.value, name or self._name):
             name1 = match.group("name1").strip().title()
             name2 = match.group("name2").strip().title()
             num = match.group("num")
@@ -614,12 +613,12 @@ class PermissionHandler:
                 f'sudo chown {uid}:{gid} "{path}"'
             ) from e
 
-    def check_permissions(self, path: Path) -> None:
-        """Ensures permissions are correct on the given path.
+    def recursive_permission_check(self, path: Path) -> None:
+        """Ensures permissions are correct starting from the given path.
 
-        Only works on POSIX systems. Recursively checks the path and its parents
-        starting from destination_folder. Fixes incorrect permissions and ownership
-        to match target values.
+        Only works on POSIX systems. Recursively checks the path and its children,
+        starting from destination_folder if not path is provided. Fixes
+        incorrect permissions and ownership to match preferred values from Config.
 
         Args:
             path: The file or folder to check.
@@ -638,7 +637,7 @@ class PermissionHandler:
             return
 
         if path.parent != Config.destination_folder:
-            self.check_permissions(path.parent)
+            self.recursive_permission_check(path.parent)
 
         cur_stat = os.stat(path)
         target = Config.get_permissions(path)
@@ -679,7 +678,7 @@ def exit_log(message: str = "", exit_code: int = 1) -> NoReturn:
 
 def check_path(path: object) -> Path | None:
     """Checks if the given object is a valid path and returns the resulting Path."""
-    if not isinstance(path, (str, Path)) or (directory := Path(path)).is_dir():
+    if not isinstance(path, (str, Path)) or not (directory := Path(path)).is_dir():
         return None
     return directory
 
@@ -737,15 +736,17 @@ def move_file(src: Path, dst: Path) -> tuple[str, int]:
     parent = dst.parent
 
     if not parent.exists():
-        try:
-            parent.mkdir(parents=True, exist_ok=True)
-        except OSError as e:
-            return f"Failed to create directory {parent}: {e}", 1
-        # Run chmod on all parent directories
-        rel_path = parent.relative_to(Config.destination_folder)
-        for part in [*[Config.destination_folder / p for p in rel_path.parts]]:
-            PermissionHandler.chmod(part)
-
+        current = Config.destination_folder
+        for part in parent.relative_to(Config.destination_folder).parts:
+            current = current / part
+            if not current.exists():
+                try:
+                    current.mkdir()
+                    PermissionHandler.chmod(current)
+                except PermissionError as e:
+                    return f"Failed to set permissions on directory {current}: {e}", 1
+                except OSError as e:
+                    return f"Failed to create directory {current}: {e}", 1
     try:
         shutil.move(src, dst)
     except shutil.Error as e:
@@ -970,7 +971,6 @@ def main() -> None:
 
     directory = check_path(os.getenv("SAB_COMPLETE_DIR"))
     category = os.getenv("SAB_CAT")
-
     if not (directory and category):
         if not (directory := check_path(sys.argv[1])):
             directory = parse_args()
@@ -984,6 +984,4 @@ def main() -> None:
     exit_log(*rename_and_move(video_file))
 
 
-main()
-
-sys.exit(0)
+sys.exit(main())
