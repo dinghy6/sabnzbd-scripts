@@ -363,6 +363,14 @@ class VideoInfo:
     """The original file (or folder) name"""
     _strict: bool = True
     """Whether to enforce strict name matching"""
+    _new_path: Path | None = None
+
+    @property
+    def new_path(self) -> Path:
+        """The new path for the video file after renaming and moving."""
+        if self._new_path is None:
+            object.__setattr__(self, "_new_path", self.construct_path())
+        return self._new_path  # type: ignore
 
     def __init__(self, path: Path, strict: bool = True) -> None:
         """Extracts and assigns information from a UFC video file name.
@@ -394,12 +402,12 @@ class VideoInfo:
         object.__setattr__(self, "event_number", event_number)
         object.__setattr__(self, "_name", name)
 
-        self.set_fighter_names()
+        self._set_fighter_names()
         if not self.fighter_names and self._strict:
             self.find_names()
 
-        self.set_edition()
-        self.set_resolution()
+        self._set_edition()
+        self._set_resolution()
 
     def __post_init__(self):
         """Post-initialization method to validate extracted information."""
@@ -433,12 +441,8 @@ class VideoInfo:
             return event_fmt[group](match.group(group)) if group else ""
         return ""
 
-    def set_fighter_names(self, name: str | None = None) -> None:
-        """Assigns fighter names from a video file name.
-
-        Args:
-            name: The string to search in.
-        """
+    def _set_fighter_names(self, name: str | None = None) -> None:
+        """Assigns fighter names from a video file name."""
         if match := re.search(UFCRegex.FIGHTER_NAMES.value, name or self.path.name):
             name1 = match.group("name1").strip().title()
             name2 = match.group("name2").strip().title()
@@ -455,7 +459,7 @@ class VideoInfo:
         """
         directory = directory or Config.destination_folder
         for path in directory.glob(f"*{self.event_number}*", case_sensitive=False):
-            self.set_fighter_names(path.name)
+            self._set_fighter_names(path.name)
 
             if path.is_dir() and not self.fighter_names:
                 self.find_names(path)
@@ -463,7 +467,7 @@ class VideoInfo:
             if self.fighter_names:
                 break
 
-    def set_edition(self) -> None:
+    def _set_edition(self) -> None:
         """Sets the edition from `_name`.
 
         Assigns a value from the Edition enum based on extracted edition type.
@@ -479,16 +483,31 @@ class VideoInfo:
         }.get(match.group(0).lower() if match else "", Edition.MAIN_EVENT)
         object.__setattr__(self, "edition", edition)
 
-    def set_resolution(self) -> None:
+    def _set_resolution(self) -> None:
         """Sets the resolution extracted from `_name`.
 
-        Normalizes different resolution formats to a consistent string.
         Converts 4K/UHD to 2160p. Looks for resolution with scan mode (p/i)
         and sets empty string if no resolution found.
         """
         name = re.sub(r"4k|uhd", "2160p", self._name, flags=re.I)
         if match := re.search(r"\d{3,4}[pi]", name, re.I):
             object.__setattr__(self, "resolution", match.group(0).lower())
+
+    def find_editions(self) -> dict[Edition, "VideoInfo"]:
+        """Scans the new path and returns an `Edition`: `VideoInfo` map.
+
+        Returns:
+            A dictionary mapping editions to `VideoInfo` objects.
+        """
+        editions = {}
+
+        for file in self.new_path.glob(f"*{self.event_number}*"):
+            if file.is_file():
+                info = VideoInfo(file, strict=False)
+                if info.event_number == self.event_number:
+                    editions[info.edition] = info
+
+        return editions
 
     def construct_path(self) -> Path:
         """Constructs a new file path, conforming to configured fomatting rules.
@@ -540,6 +559,107 @@ class VideoInfo:
         return dest / file_name
 
 
+class PermissionHandler:
+    """Handles file and folder permissions."""
+
+    script_uid: ClassVar[int]
+    """The UID of the script user."""
+    script_gid: ClassVar[int]
+    """The GID of the script user."""
+    is_root: ClassVar[bool]
+    """Whether the script is running as root."""
+    ref_uid: ClassVar[int]
+    """The UID of the reference user."""
+    ref_gid: ClassVar[int]
+    """The GID of the reference user."""
+
+    def __init__(self) -> None:
+        """Initializes the PermissionHandler class."""
+        if not_posix():
+            return
+        PermissionHandler.script_uid = os.getuid()  # type: ignore pylint: disable=no-member
+        PermissionHandler.script_gid = os.getgid()  # type: ignore pylint: disable=no-member
+        PermissionHandler.is_root = bool(PermissionHandler.script_uid == 0)
+        ref_stat = os.stat(Config.destination_folder)
+        PermissionHandler.ref_uid = ref_stat.st_uid
+        PermissionHandler.ref_gid = ref_stat.st_gid
+
+    @staticmethod
+    def chmod(path: Path, target: int = 0) -> None:
+        """Change the permissions of the given path."""
+        if not target:
+            target = Config.get_permissions(path)
+        try:
+            os.chmod(path, target)
+            print(f"Set permissions of {path} to {oct(target)}")
+        except PermissionError as e:
+            raise PermissionError(
+                f"Failed to set permissions of {path}: {e}. "
+                f"\nTry running chmod manually:\n"
+                f'sudo chmod {oct(target)} "{path}"'
+            ) from e
+
+    @staticmethod
+    def chown(path: Path, uid: int, gid: int) -> None:
+        """Change the ownership of the given path."""
+        if not_posix():
+            return
+        try:
+            os.chown(path, uid, gid)  # type: ignore pylint: disable=no-member
+            print(f"Set ownership of {path} to {uid}:{gid}")
+        except PermissionError as e:
+            raise PermissionError(
+                f"Failed to set ownership of {path}: {e}. "
+                f"\nTry running chown manually:\n"
+                f'sudo chown {uid}:{gid} "{path}"'
+            ) from e
+
+    def check_permissions(self, path: Path) -> None:
+        """Ensures permissions are correct on the given path.
+
+        Only works on POSIX systems. Recursively checks the path and its parents
+        starting from destination_folder. Fixes incorrect permissions and ownership
+        to match target values.
+
+        Args:
+            path: The file or folder to check.
+            ref: Reference stat object to compare against.
+
+        Raises:
+            PermissionError: If permissions or ownership cannot be fixed.
+        """
+
+        if path.is_dir() and not os.access(path, os.W_OK):
+            print(f"Error: {path} is not valid and writable")
+            return
+
+        if not path.is_relative_to(Config.destination_folder):
+            print(f"Error: {path} is not a child of {Config.destination_folder}")
+            return
+
+        if path.parent != Config.destination_folder:
+            self.check_permissions(path.parent)
+
+        cur_stat = os.stat(path)
+        target = Config.get_permissions(path)
+
+        if (cur_stat.st_mode & 0o777) == target:
+            return
+
+        # The script must be running as root or own the path to set permissions
+        if not self.is_root and self.script_uid != cur_stat.st_uid:
+            raise PermissionError(
+                f"Cannot fix permissions of {path} because the script is not "
+                f"running as the owner or root. Try running chown manually:\n"
+                f'sudo chown -R {self.script_uid}:{self.script_gid} "{path}"\n'
+            )
+
+        self.chmod(path, target)
+
+        if self.is_root:
+            self.chown(path, self.ref_uid, self.ref_gid)
+
+
 def exit_log(message: str = "", exit_code: int = 1) -> NoReturn:
     """Logs a message and exits the program with the specified exit code.
 
@@ -558,15 +678,7 @@ def exit_log(message: str = "", exit_code: int = 1) -> NoReturn:
 
 
 def check_path(path: object) -> Path | None:
-    """Checks if the given path exists and is a directory.
-
-    Args:
-        path: The path to check. Must be a string or Path object.
-
-    Returns:
-        The Path object of the given directory if it is an existing directory,
-        otherwise None.
-    """
+    """Checks if the given object is a valid path and returns the resulting Path."""
     if not isinstance(path, (str, Path)) or (directory := Path(path)).is_dir():
         return None
     return directory
@@ -580,24 +692,6 @@ def is_valid_folder_name(name: str) -> bool:
 def not_posix() -> bool:
     """Checks if the script is not running on a POSIX system."""
     return os.name != "posix"
-
-
-def find_editions(path: Path, event_number: str) -> dict[Edition, VideoInfo]:
-    """Scans the given directory and returns an `Edition`: `VideoInfo` map.
-
-    Args:
-        path: The directory path to scan for files.
-        event_number: The event number to filter by.
-
-    Returns:
-        A dictionary mapping editions to `VideoInfo` objects.
-    """
-    return {
-        info.edition: info
-        for file in path.glob(f"*{event_number}*", case_sensitive=False)
-        if file.is_file()
-        and (info := VideoInfo(file, strict=False)).event_number == event_number
-    }
 
 
 def find_largest_video_file(video_path: Path) -> Path | None:
@@ -626,106 +720,6 @@ def find_largest_video_file(video_path: Path) -> Path | None:
         return None
 
 
-def chmod(path: Path, target: int) -> None:
-    """Change the permissions of the given path."""
-    try:
-        os.chmod(path, target)
-        print(f"Set permissions of {path} to {oct(target)}")
-    except PermissionError as e:
-        raise PermissionError(
-            f"Failed to set permissions of {path}: {e}. "
-            f"\nTry running chmod manually:\n"
-            f'sudo chmod {oct(target)} "{path}"'
-        ) from e
-
-
-def chown(path: Path, uid: int, gid: int) -> None:
-    """Change the ownership of the given path."""
-    try:
-        os.chown(path, uid, gid)  # type: ignore pylint: disable=no-member
-        print(f"Set ownership of {path} to {uid}:{gid}")
-    except PermissionError as e:
-        raise PermissionError(
-            f"Failed to set ownership of {path}: {e}. "
-            f"\nTry running chown manually:\n"
-            f'sudo chown {uid}:{gid} "{path}"'
-        ) from e
-
-
-def fix_permissions(
-    path: Path, cur_uid: int, ref_stat: os.stat_result, target: int
-) -> None:
-    """Changes the permissions and owner of the given path.
-
-    Args:
-        path: The path to fix permissions for.
-        cur_uid: The current uid of the path.
-        ref_stat: The reference stat result.
-        target: The target permissions to set.
-
-    Raises:
-        PermissionError: If the permissions or owner cannot be changed.
-    """
-    if not_posix():
-        return
-
-    ref_uid, ref_gid = ref_stat.st_uid, ref_stat.st_gid
-
-    scr_uid = os.getuid()  # type: ignore pylint: disable=no-member
-    root = bool(scr_uid == 0)
-
-    # The script must be running as root or own the path to set permissions
-    if not root and scr_uid != cur_uid:
-        raise PermissionError(
-            f"Cannot fix permissions of {path} because the script is not "
-            f"running as the owner or root. Try running chown manually:\n"
-            f'sudo chown -R {scr_uid}:{scr_uid} "{path}"\n'
-        )
-
-    chmod(path, target)
-
-    if root:
-        chown(path, ref_uid, ref_gid)
-
-
-def check_permissions(path: Path, ref: os.stat_result) -> None:
-    """Ensures permissions are correct on the given path.
-
-    Only works on POSIX systems. Recursively checks the path and its parents
-    starting from destination_folder. Fixes incorrect permissions and ownership
-    to match target values.
-
-    Args:
-        path: The file or folder to check.
-        ref: Reference stat object to compare against.
-
-    Raises:
-        OSError: If permissions or ownership cannot be fixed.
-    """
-
-    if not_posix():
-        return
-
-    if path.is_dir() and not os.access(path, os.W_OK):
-        print(f"Error: {path} is not valid and writable")
-        return
-
-    if not path.is_relative_to(Config.destination_folder):
-        print(f"Error: {path} is not a child of {Config.destination_folder}")
-        return
-
-    if path.parent != Config.destination_folder:
-        check_permissions(path.parent, ref)
-
-    cur_stat = os.stat(path)
-    target = Config.get_permissions(path)
-
-    if (cur_stat.st_mode & 0o777) == target:
-        return
-
-    fix_permissions(path, cur_stat.st_uid, ref, target)
-
-
 def move_file(src: Path, dst: Path) -> tuple[str, int]:
     """Moves a file from its original location to a new location.
 
@@ -742,33 +736,21 @@ def move_file(src: Path, dst: Path) -> tuple[str, int]:
 
     parent = dst.parent
 
-    ref_stat = os.stat(Config.destination_folder)
-
-    # Get permissions, minimum 770
-    mode = Config.get_permissions(src.parent)
-
     if not parent.exists():
         try:
             parent.mkdir(parents=True, exist_ok=True)
-            print(f"Setting permissions of {parent} to {oct(mode)}")
-            os.chmod(parent, mode)
         except OSError as e:
             return f"Failed to create directory {parent}: {e}", 1
-
-    # Get permissions, minimum 660
-    mode = Config.get_permissions(src)
+        # Run chmod on all parent directories
+        rel_path = parent.relative_to(Config.destination_folder)
+        for part in [*[Config.destination_folder / p for p in rel_path.parts]]:
+            PermissionHandler.chmod(part)
 
     try:
         shutil.move(src, dst)
-        print(f"Setting permissions of {dst} to {oct(mode)}")
-        os.chmod(dst, mode)
     except shutil.Error as e:
         return f"Failed to move {src} to {dst}: {e}", 1
-
-    try:
-        check_permissions(dst, ref_stat)
-    except OSError as e:
-        return f"Failed permission check: {e}", 1
+    PermissionHandler.chmod(dst)
 
     return f"Moved {src} to {dst}", 0
 
@@ -785,7 +767,7 @@ def rename_and_move(file_path: Path) -> tuple[str, int]:
 
     # VideoInfo obj includes file_path, not new_path
     info = VideoInfo(file_path)
-    new_path = info.construct_path()
+    new_path = info.new_path
 
     if new_path.exists():
         # If the new file already exists, print an error and exit
@@ -796,7 +778,7 @@ def rename_and_move(file_path: Path) -> tuple[str, int]:
         return move_file(info.path, new_path)
 
     # find if an existing video file with same edition and event number exists
-    x_info = find_editions(new_path.parent, info.event_number).get(info.edition)
+    x_info = info.find_editions().get(info.edition)
 
     if x_info is None or x_info.path == file_path:
         return move_file(info.path, new_path)
