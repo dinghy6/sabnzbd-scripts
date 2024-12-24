@@ -399,6 +399,12 @@ class VideoInfo:
             # Check folder name and reassign name for further parsing
             name = re.sub(r"[\.\s_]", " ", path.parent.name)
             event_number = self.get_event_number(name)
+        if not event_number and strict:
+            if Config.strict_matching:
+                exit_log(f"Unable to extract UFC event number from {path}", exit_code=1)
+            else:
+                exit_log(exit_code=0)
+
         object.__setattr__(self, "event_number", event_number)
         object.__setattr__(self, "_name", name)
 
@@ -456,6 +462,8 @@ class VideoInfo:
         Recursively searches the directory for matches of `event_number`. This also
         enables a bulk rename to fix folders with missing fighter names.
         """
+        if not self.event_number:
+            return
         directory = directory or Config.destination_folder
         for path in directory.glob(f"*{self.event_number}*", case_sensitive=False):
             self._set_fighter_names(path.name)
@@ -941,7 +949,7 @@ def parse_args() -> Path:
         exit_log("Done.", exit_code=0)
 
     if not directory:
-        exit_log(f"Invalid starting directory: {directory}", exit_code=1)
+        exit_log(f"Invalid starting directory: {args.directory}", exit_code=1)
 
     return directory
 
